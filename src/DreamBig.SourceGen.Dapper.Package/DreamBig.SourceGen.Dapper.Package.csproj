@@ -22,6 +22,7 @@
     <DevelopmentDependency>false</DevelopmentDependency>
     <NoPackageAnalysis>false</NoPackageAnalysis>
     <SuppressTfmSupportBuildWarnings>true</SuppressTfmSupportBuildWarnings>
+    <IncludeSymbols>false</IncludeSymbols>
   </PropertyGroup>
 
   <ItemGroup>
