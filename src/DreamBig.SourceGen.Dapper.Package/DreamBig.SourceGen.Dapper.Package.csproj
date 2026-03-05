@@ -51,7 +51,7 @@
     <None Include="..\DreamBig.SourceGen.Dapper.Generator\bin\$(Configuration)\netstandard2.0\DreamBig.SourceGen.Dapper.Generator.dll" Pack="true" PackagePath="analyzers/dotnet/cs/" Visible="false" />
   </ItemGroup>
 
-  <Target Name="BuildPackageDependencies" BeforeTargets="Pack">
+  <Target Name="BuildPackageDependencies" BeforeTargets="Pack" Condition="'$(NoBuild)' != 'true'">
     <MSBuild
       Projects="..\DreamBig.SourceGen.Dapper.Abstractions\DreamBig.SourceGen.Dapper.Abstractions.csproj;..\DreamBig.SourceGen.Dapper.Generator\DreamBig.SourceGen.Dapper.Generator.csproj"
       Targets="Build"
