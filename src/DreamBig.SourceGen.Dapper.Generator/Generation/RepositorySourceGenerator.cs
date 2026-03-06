@@ -124,7 +124,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             Name: p.Name,
             TypeName: p.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
             ParameterName: ResolveDbParamName(p),
-            DbParamAttribute: ReadDbParamAttribute(p))).ToList();
+            DbParamAttribute: ReadDbParamAttribute(p),
+            IsCancellationToken: IsCancellationTokenType(p.Type))).ToList();
 
         var methodShape = MethodShape.FromReturnType(method.ReturnType);
         if (!methodShape.IsSupported)
@@ -136,13 +137,35 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return null;
         }
 
+        if (!methodShape.IsAsync)
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.AsyncReturnTypeRequired,
+                method.Locations.FirstOrDefault(),
+                method.Name));
+            return null;
+        }
+
+        var cancellationTokenParameter = parameters.FirstOrDefault(static p => p.IsCancellationToken);
+        if (cancellationTokenParameter is null)
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.CancellationTokenRequired,
+                method.Locations.FirstOrDefault(),
+                method.Name));
+            return null;
+        }
+
+        var operationParameters = parameters.Where(static p => !p.IsCancellationToken).ToList();
+
         EntityModel? entity = null;
 
         switch (operationKind)
         {
             case RepositoryOperationKind.Insert:
             case RepositoryOperationKind.Update:
-                if (method.Parameters.Length == 1 && method.Parameters[0].Type is INamedTypeSymbol entityType)
+                if (operationParameters.Count == 1
+                    && method.Parameters.First(p => p.Name == operationParameters[0].Name).Type is INamedTypeSymbol entityType)
                 {
                     entity = BuildEntityModel(entityType, method, diagnostics);
                 }
@@ -177,6 +200,20 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 break;
             default:
                 break;
+        }
+
+        if (methodShape.IsTaskWithoutResult
+            && operationKind is RepositoryOperationKind.GetById
+                or RepositoryOperationKind.GetAll
+                or RepositoryOperationKind.GetPage
+                or RepositoryOperationKind.Query
+                or RepositoryOperationKind.StoredProcedure)
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.UnsupportedSignature,
+                method.Locations.FirstOrDefault(),
+                method.Name));
+            return null;
         }
 
         if ((operationKind == RepositoryOperationKind.Update || operationKind == RepositoryOperationKind.Delete || operationKind == RepositoryOperationKind.GetById)
@@ -225,9 +262,11 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             IsAsync: methodShape.IsAsync,
             ReturnsEnumerable: methodShape.ReturnsEnumerable,
             ReturnsProcedureResult: methodShape.IsProcedureResult,
+            IsTaskWithoutResult: methodShape.IsTaskWithoutResult,
             ElementTypeName: methodShape.ElementType?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
             OperationKind: operationKind,
             Parameters: parameters,
+            CancellationTokenParameterName: cancellationTokenParameter.Name,
             Entity: entity,
             QueryMetadata: queryMetadata);
     }
@@ -475,20 +514,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var sb = new StringBuilder();
         var parameterList = string.Join(", ", method.Parameters.Select(static p => $"{p.TypeName} {p.Name}"));
 
-        if (!string.IsNullOrEmpty(parameterList))
-        {
-            parameterList += ", ";
-        }
-
-        parameterList += "CancellationToken cancellationToken = default";
-
         sb.AppendLine($"    public {method.ReturnTypeName} {method.Name}({parameterList})");
         sb.AppendLine("    {");
-
-        if (!method.IsAsync)
-        {
-            sb.AppendLine("        _ = cancellationToken;");
-        }
 
         switch (method.OperationKind)
         {
@@ -527,82 +554,95 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
     private static void RenderInsert(RepositoryMethodModel method, StringBuilder sb)
     {
-        if (method.Entity is null || method.Parameters.Count != 1)
+        var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
+        if (method.Entity is null || operationParameters.Count != 1)
         {
             sb.AppendLine("        throw new NotSupportedException(\"Insert signature is invalid.\");");
             return;
         }
 
-        var entityParameter = method.Parameters[0].Name;
+        var entityParameter = operationParameters[0].Name;
         var writeColumns = method.Entity.Properties.Where(static p => !p.IsKey).ToList();
         var columnsSql = string.Join(", ", writeColumns.Select(p => Quote(p.ColumnName)));
         var valuesSql = string.Join(", ", writeColumns.Select(p => "@" + p.PropertyName));
         var sql = $"INSERT INTO {QualifiedTable(method.Entity)} ({columnsSql}) VALUES ({valuesSql});";
-        var returnExpression = method.IsAsync
-            ? $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", {entityParameter}, _transaction).ConfigureAwait(false)"
-            : $"_connection.ExecuteGenerated(\"{EscapeSql(sql)}\", {entityParameter}, _transaction)";
+        var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", {entityParameter}, _transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
 
-        sb.AppendLine($"        return {returnExpression};");
+        if (method.IsTaskWithoutResult)
+        {
+            sb.AppendLine($"        {executeExpression};");
+            sb.AppendLine("        return;");
+            return;
+        }
+
+        sb.AppendLine($"        return {executeExpression};");
     }
 
     private static void RenderUpdate(RepositoryMethodModel method, StringBuilder sb)
     {
-        if (method.Entity is null || method.Entity.KeyProperty is null || method.Parameters.Count != 1)
+        var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
+        if (method.Entity is null || method.Entity.KeyProperty is null || operationParameters.Count != 1)
         {
             sb.AppendLine("        throw new NotSupportedException(\"Update signature is invalid.\");");
             return;
         }
 
-        var entityParameter = method.Parameters[0].Name;
+        var entityParameter = operationParameters[0].Name;
         var writeColumns = method.Entity.Properties.Where(static p => !p.IsKey).ToList();
         var setSql = string.Join(", ", writeColumns.Select(p => $"{Quote(p.ColumnName)} = @{p.PropertyName}"));
         var sql = $"UPDATE {QualifiedTable(method.Entity)} SET {setSql} WHERE {Quote(method.Entity.KeyProperty.ColumnName)} = @{method.Entity.KeyProperty.PropertyName};";
-        var returnExpression = method.IsAsync
-            ? $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", {entityParameter}, _transaction).ConfigureAwait(false)"
-            : $"_connection.ExecuteGenerated(\"{EscapeSql(sql)}\", {entityParameter}, _transaction)";
+        var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", {entityParameter}, _transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
 
-        sb.AppendLine($"        return {returnExpression};");
+        if (method.IsTaskWithoutResult)
+        {
+            sb.AppendLine($"        {executeExpression};");
+            sb.AppendLine("        return;");
+            return;
+        }
+
+        sb.AppendLine($"        return {executeExpression};");
     }
 
     private static void RenderDelete(RepositoryMethodModel method, StringBuilder sb)
     {
-        if (method.Parameters.Count == 0)
+        var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
+        if (operationParameters.Count == 0)
         {
             sb.AppendLine("        throw new NotSupportedException(\"Delete signature is invalid.\");");
             return;
         }
 
         var table = method.Entity is null ? "[dbo].[Unknown]" : QualifiedTable(method.Entity);
-        var keyColumn = method.Entity?.KeyProperty?.ColumnName ?? method.Parameters[0].Name;
-        var paramName = method.Parameters[0].Name;
+        var keyColumn = method.Entity?.KeyProperty?.ColumnName ?? operationParameters[0].Name;
+        var paramName = operationParameters[0].Name;
         var sql = $"DELETE FROM {table} WHERE {Quote(keyColumn)} = @{paramName};";
-        var returnExpression = method.IsAsync
-            ? $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", new {{ {paramName} }}, _transaction).ConfigureAwait(false)"
-            : $"_connection.ExecuteGenerated(\"{EscapeSql(sql)}\", new {{ {paramName} }}, _transaction)";
+        var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", new {{ {paramName} }}, _transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
 
-        sb.AppendLine($"        return {returnExpression};");
+        if (method.IsTaskWithoutResult)
+        {
+            sb.AppendLine($"        {executeExpression};");
+            sb.AppendLine("        return;");
+            return;
+        }
+
+        sb.AppendLine($"        return {executeExpression};");
     }
 
     private static void RenderGetById(RepositoryMethodModel method, StringBuilder sb)
     {
-        if (method.Entity is null || method.Entity.KeyProperty is null || method.Parameters.Count == 0)
+        var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
+        if (method.Entity is null || method.Entity.KeyProperty is null || operationParameters.Count == 0)
         {
             sb.AppendLine("        throw new NotSupportedException(\"GetById signature is invalid.\");");
             return;
         }
 
-        var keyParameter = method.Parameters[0].Name;
+        var keyParameter = operationParameters[0].Name;
         var selectSql = BuildEntitySelect(method.Entity);
         var sql = $"{selectSql} WHERE {Quote(method.Entity.KeyProperty.ColumnName)} = @{keyParameter};";
 
-        if (method.IsAsync)
-        {
-            sb.AppendLine($"        var rows = await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ {keyParameter} }}, _transaction, cancellationToken: cancellationToken).ConfigureAwait(false);");
-            sb.AppendLine("        return rows.FirstOrDefault();");
-            return;
-        }
-
-        sb.AppendLine($"        return _connection.QueryGenerated<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ {keyParameter} }}, _transaction).FirstOrDefault();");
+        sb.AppendLine($"        var rows = await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ {keyParameter} }}, _transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+        sb.AppendLine("        return rows.FirstOrDefault();");
     }
 
     private static void RenderGetAll(RepositoryMethodModel method, StringBuilder sb)
@@ -615,13 +655,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
         var sql = BuildEntitySelect(method.Entity) + ";";
 
-        if (method.IsAsync)
-        {
-            sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", transaction: _transaction, cancellationToken: cancellationToken).ConfigureAwait(false);");
-            return;
-        }
-
-        sb.AppendLine($"        return _connection.QueryGenerated<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", transaction: _transaction);");
+        sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", transaction: _transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
     }
 
     private static void RenderGetPage(RepositoryMethodModel method, StringBuilder sb)
@@ -635,13 +669,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var orderBy = method.Entity.KeyProperty?.ColumnName ?? method.Entity.Properties.FirstOrDefault()?.ColumnName ?? "Id";
         var sql = $"{BuildEntitySelect(method.Entity)} ORDER BY {Quote(orderBy)} OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY;";
 
-        if (method.IsAsync)
-        {
-            sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ skip, take }}, _transaction, cancellationToken: cancellationToken).ConfigureAwait(false);");
-            return;
-        }
-
-        sb.AppendLine($"        return _connection.QueryGenerated<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ skip, take }}, _transaction);");
+        sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ skip, take }}, _transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
     }
 
     private static void RenderQuery(RepositoryMethodModel method, StringBuilder sb)
@@ -666,17 +694,12 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var orderBySql = string.IsNullOrWhiteSpace(method.QueryMetadata.OrderBy) ? string.Empty : $" ORDER BY {method.QueryMetadata.OrderBy}";
         var sql = $"SELECT {selectColumns} FROM {from}{joinSql}{whereSql}{orderBySql};";
 
-        var anonymousParam = method.Parameters.Count == 0
+        var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
+        var anonymousParam = operationParameters.Count == 0
             ? "null"
-            : "new { " + string.Join(", ", method.Parameters.Select(static p => p.Name)) + " }";
+            : "new { " + string.Join(", ", operationParameters.Select(static p => p.Name)) + " }";
 
-        if (method.IsAsync)
-        {
-            sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", {anonymousParam}, _transaction, cancellationToken: cancellationToken).ConfigureAwait(false);");
-            return;
-        }
-
-        sb.AppendLine($"        return _connection.QueryGenerated<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", {anonymousParam}, _transaction);");
+        sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", {anonymousParam}, _transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
     }
 
     private static void RenderStoredProcedure(RepositoryMethodModel method, StringBuilder sb)
@@ -685,7 +708,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var procedureName = spAttribute ?? "[dbo].[UnknownProcedure]";
 
         sb.AppendLine("        var dynamicParameters = new DynamicParameters();");
-        foreach (var parameter in method.Parameters)
+        foreach (var parameter in method.Parameters.Where(static p => !p.IsCancellationToken))
         {
             var config = parameter.DbParamAttribute;
             if (config is null)
@@ -710,11 +733,12 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         }
 
         var outputNames = method.Parameters
+            .Where(static p => !p.IsCancellationToken)
             .Where(static p => p.DbParamAttribute is { Direction: DbParamDirectionModel.Output or DbParamDirectionModel.InputOutput })
             .Select(static p => $"\"{p.ParameterName}\"")
             .ToList();
 
-        sb.AppendLine($"        var result = _connection.QueryStoredProcedureGenerated<{method.ElementTypeName ?? "dynamic"}>(\"{EscapeSql(procedureName)}\", dynamicParameters, new[] {{ {string.Join(", ", outputNames)} }}, _transaction);");
+        sb.AppendLine($"        var result = await _connection.QueryStoredProcedureGeneratedAsync<{method.ElementTypeName ?? "dynamic"}>(\"{EscapeSql(procedureName)}\", dynamicParameters, new[] {{ {string.Join(", ", outputNames)} }}, _transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
 
         if (method.ReturnsProcedureResult)
         {
@@ -816,6 +840,12 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         return string.IsNullOrWhiteSpace(configured) ? "@" + parameter.Name : configured!;
     }
 
+    private static bool IsCancellationTokenType(ITypeSymbol type)
+    {
+        var typeName = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        return string.Equals(typeName, "global::System.Threading.CancellationToken", StringComparison.Ordinal);
+    }
+
     private static DbParamAttributeModel? ReadDbParamAttribute(IParameterSymbol parameter)
     {
         var attribute = parameter.GetAttributes().FirstOrDefault(a => IsAttribute(a.AttributeClass, DbParamAttribute));
@@ -853,9 +883,11 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         bool IsAsync,
         bool ReturnsEnumerable,
         bool ReturnsProcedureResult,
+        bool IsTaskWithoutResult,
         string? ElementTypeName,
         RepositoryOperationKind OperationKind,
         IReadOnlyList<MethodParameterModel> Parameters,
+        string CancellationTokenParameterName,
         EntityModel? Entity,
         QueryMetadata QueryMetadata);
 
@@ -863,7 +895,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         string Name,
         string TypeName,
         string ParameterName,
-        DbParamAttributeModel? DbParamAttribute);
+        DbParamAttributeModel? DbParamAttribute,
+        bool IsCancellationToken);
 
     private sealed record EntityModel(
         string ClrTypeName,
@@ -915,6 +948,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     private sealed record MethodShape(
         bool IsSupported,
         bool IsAsync,
+        bool IsTaskWithoutResult,
         bool ReturnsEnumerable,
         bool IsProcedureResult,
         INamedTypeSymbol? ElementType)
@@ -930,31 +964,31 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                     return nested with { IsAsync = true };
                 }
 
-                return new MethodShape(true, true, false, false, null);
+                return new MethodShape(true, true, true, false, false, null);
             }
 
             if (returnType is INamedTypeSymbol generic
                 && generic.IsGenericType
                 && generic.Name is "IEnumerable" or "IReadOnlyList" or "List")
             {
-                return new MethodShape(true, false, true, false, generic.TypeArguments[0] as INamedTypeSymbol);
+                return new MethodShape(true, false, false, true, false, generic.TypeArguments[0] as INamedTypeSymbol);
             }
 
             if (returnType is INamedTypeSymbol procedureResult
                 && procedureResult.IsGenericType
                 && procedureResult.Name == "GeneratedProcedureResult")
             {
-                return new MethodShape(true, false, false, true, procedureResult.TypeArguments[0] as INamedTypeSymbol);
+                return new MethodShape(true, false, false, false, true, procedureResult.TypeArguments[0] as INamedTypeSymbol);
             }
 
             if (returnType.SpecialType is SpecialType.System_Int32)
             {
-                return new MethodShape(true, false, false, false, null);
+                return new MethodShape(true, false, false, false, false, null);
             }
 
             return returnType as INamedTypeSymbol is { TypeKind: TypeKind.Class or TypeKind.Struct }
-                ? new MethodShape(true, false, false, false, returnType as INamedTypeSymbol)
-                : new MethodShape(false, false, false, false, null);
+                ? new MethodShape(true, false, false, false, false, returnType as INamedTypeSymbol)
+                : new MethodShape(false, false, false, false, false, null);
         }
     }
 }

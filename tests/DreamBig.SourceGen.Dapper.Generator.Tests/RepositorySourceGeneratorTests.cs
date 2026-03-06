@@ -15,6 +15,8 @@ public sealed class RepositorySourceGeneratorTests
     {
         const string source = """
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using DreamBig.SourceGen.Dapper.Attributes;
 
 namespace Demo;
@@ -34,11 +36,11 @@ public sealed class Customer
 [DbRepository]
 public interface ICustomerRepository
 {
-    int InsertCustomer(Customer entity);
-    int UpdateCustomer(Customer entity);
-    int DeleteCustomer(int id);
-    Customer? GetByIdCustomer(int id);
-    IEnumerable<Customer> GetAllCustomers();
+    Task<int> InsertCustomer(Customer entity, CancellationToken cancellationToken);
+    Task<int> UpdateCustomer(Customer entity, CancellationToken cancellationToken);
+    Task<int> DeleteCustomer(int id, CancellationToken cancellationToken);
+    Task<Customer?> GetByIdCustomer(int id, CancellationToken cancellationToken);
+    Task<IEnumerable<Customer>> GetAllCustomers(CancellationToken cancellationToken);
 }
 """;
 
@@ -61,6 +63,8 @@ public interface ICustomerRepository
         const string source = """
 using System.Collections.Generic;
 using System.Data;
+using System.Threading;
+using System.Threading.Tasks;
 using DreamBig.SourceGen.Dapper.Attributes;
 using DreamBig.SourceGen.Dapper.Internal;
 
@@ -77,10 +81,10 @@ public interface ICustomerReadRepository
 {
     [DbQuery(From = "[dbo].[Customers] c", Where = "c.[IsActive] = @isActive", OrderBy = "c.[Id] DESC")]
     [DbJoin(JoinType.Left, "[dbo].[Orders] o", "c.Id", "o.CustomerId")]
-    IEnumerable<CustomerSummary> QueryActive(bool isActive);
+    Task<IEnumerable<CustomerSummary>> QueryActive(bool isActive, CancellationToken cancellationToken);
 
     [DbStoredProcedure("usp_customer_summary", Schema = "dbo")]
-    GeneratedProcedureResult<CustomerSummary> GetSummary([DbParam("@customerId", DbType = DbType.Int32)] int customerId, [DbParam("@total", Direction = DbParamDirection.Output)] int total);
+    Task<GeneratedProcedureResult<CustomerSummary>> GetSummary([DbParam("@customerId", DbType = DbType.Int32)] int customerId, [DbParam("@total", Direction = DbParamDirection.Output)] int total, CancellationToken cancellationToken);
 }
 """;
 
@@ -94,12 +98,15 @@ public interface ICustomerReadRepository
         generated.ShouldContain("LEFT OUTER JOIN [dbo].[Orders] o ON c.Id = o.CustomerId");
         generated.ShouldContain("[dbo].[usp_customer_summary]");
         generated.ShouldContain("System.Data.ParameterDirection.Output");
+        generated.ShouldContain("QueryStoredProcedureGeneratedAsync<");
     }
 
     [Fact]
     public void ShouldReportMissingKeyDiagnostic()
     {
         const string source = """
+using System.Threading;
+using System.Threading.Tasks;
 using DreamBig.SourceGen.Dapper.Attributes;
 
 namespace Demo;
@@ -114,7 +121,7 @@ public sealed class Customer
 [DbRepository]
 public interface ICustomerRepository
 {
-    int UpdateCustomer(Customer entity);
+    Task<int> UpdateCustomer(Customer entity, CancellationToken cancellationToken);
 }
 """;
 
@@ -126,6 +133,8 @@ public interface ICustomerRepository
     public void ShouldUseDbTablePrimaryKeyWithoutDbKeyAttribute()
     {
         const string source = """
+using System.Threading;
+using System.Threading.Tasks;
 using DreamBig.SourceGen.Dapper.Attributes;
 
 namespace Demo;
@@ -140,7 +149,7 @@ public sealed class Customer
 [DbRepository]
 public interface ICustomerRepository
 {
-    int UpdateCustomer(Customer entity);
+    Task<int> UpdateCustomer(Customer entity, CancellationToken cancellationToken);
 }
 """;
 
@@ -152,6 +161,58 @@ public interface ICustomerRepository
             result.GeneratedTrees.Select(static t => t.GetText().ToString()));
 
         generated.ShouldContain("WHERE [Id] = @Id;");
+    }
+
+    [Fact]
+    public void ShouldReportAsyncReturnTypeRequiredDiagnostic()
+    {
+        const string source = """
+using System.Threading;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers", PrimaryKey = "Id")]
+public sealed class Customer
+{
+    public int Id { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    int UpdateCustomer(Customer entity, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD006").ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ShouldReportCancellationTokenRequiredDiagnostic()
+    {
+        const string source = """
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers", PrimaryKey = "Id")]
+public sealed class Customer
+{
+    public int Id { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<int> UpdateCustomer(Customer entity);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD007").ShouldBeTrue();
     }
 
     private static GeneratorResult RunGenerator(string source)

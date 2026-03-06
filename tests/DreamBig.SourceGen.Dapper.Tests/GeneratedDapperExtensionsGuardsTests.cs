@@ -62,6 +62,30 @@ public sealed class GeneratedDapperExtensionsGuardsTests
             Array.Empty<string>()));
     }
 
+    [Fact]
+    public void QueryStoredProcedureGeneratedAsync_ShouldThrowForNullConnection()
+    {
+        var parameters = new DynamicParameters();
+
+        Should.Throw<ArgumentNullException>(() => GeneratedDapperExtensions.QueryStoredProcedureGeneratedAsync<int>(
+            null!,
+            "usp_test",
+            parameters,
+            Array.Empty<string>()));
+    }
+
+    [Fact]
+    public void QueryStoredProcedureGeneratedAsync_ShouldThrowForNullParameters()
+    {
+        var connection = new FakeDbConnection();
+
+        Should.Throw<ArgumentNullException>(() => GeneratedDapperExtensions.QueryStoredProcedureGeneratedAsync<int>(
+            connection,
+            "usp_test",
+            null!,
+            Array.Empty<string>()));
+    }
+
     private sealed class FakeDbConnection : IDbConnection
     {
         private string _connectionString = string.Empty;

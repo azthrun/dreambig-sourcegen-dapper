@@ -43,4 +43,20 @@ internal static class DiagnosticDescriptors
         category: "DreamBig.SourceGen.Dapper",
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor AsyncReturnTypeRequired = new(
+        id: "DBSGD006",
+        title: "Async return type is required",
+        messageFormat: "Repository method '{0}' must return Task or Task<T>.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor CancellationTokenRequired = new(
+        id: "DBSGD007",
+        title: "CancellationToken parameter is required",
+        messageFormat: "Repository method '{0}' must declare a CancellationToken parameter.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
 }

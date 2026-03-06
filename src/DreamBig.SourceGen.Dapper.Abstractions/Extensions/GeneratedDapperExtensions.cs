@@ -194,4 +194,51 @@ public static class GeneratedDapperExtensions
             n => parameters.Get<dynamic>(n) as object);
         return new GeneratedProcedureResult<T>(rows, outputs);
     }
+
+    /// <summary>
+    /// Executes a stored procedure asynchronously and captures output parameters.
+    /// </summary>
+    /// <typeparam name="T">Result row type.</typeparam>
+    /// <param name="connection">Database connection.</param>
+    /// <param name="procedureName">Stored procedure name.</param>
+    /// <param name="parameters">Dapper dynamic parameters.</param>
+    /// <param name="outputParameterNames">Output parameter names.</param>
+    /// <param name="transaction">Optional transaction.</param>
+    /// <param name="commandTimeout">Optional timeout.</param>
+    /// <param name="cancellationToken">Command cancellation token.</param>
+    /// <returns>Procedure rows and output values.</returns>
+    public static async Task<GeneratedProcedureResult<T>> QueryStoredProcedureGeneratedAsync<T>(
+        this IDbConnection connection,
+        string procedureName,
+        DynamicParameters parameters,
+        IEnumerable<string> outputParameterNames,
+        IDbTransaction? transaction = null,
+        int? commandTimeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (connection is null)
+        {
+            throw new ArgumentNullException(nameof(connection));
+        }
+
+        if (parameters is null)
+        {
+            throw new ArgumentNullException(nameof(parameters));
+        }
+
+        var command = new CommandDefinition(
+            procedureName,
+            parameters,
+            transaction,
+            commandTimeout,
+            CommandType.StoredProcedure,
+            cancellationToken: cancellationToken);
+
+        var rows = (await connection.QueryAsync<T>(command).ConfigureAwait(false)).ToList();
+
+        var outputs = outputParameterNames.ToDictionary<string, string, object?>(
+            static n => n,
+            n => parameters.Get<dynamic>(n) as object);
+        return new GeneratedProcedureResult<T>(rows, outputs);
+    }
 }
