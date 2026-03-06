@@ -55,6 +55,7 @@ public interface ICustomerRepository
         generated.ShouldContain("UPDATE [dbo].[Customers] SET");
         generated.ShouldContain("DELETE FROM [dbo].[Customers]");
         generated.ShouldContain("SELECT [Id] AS [Id], [full_name] AS [Name], [Email] AS [Email] FROM [dbo].[Customers]");
+        generated.ShouldContain("public async global::System.Threading.Tasks.Task<int> InsertCustomer");
     }
 
     [Fact]

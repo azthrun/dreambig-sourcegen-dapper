@@ -514,7 +514,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var sb = new StringBuilder();
         var parameterList = string.Join(", ", method.Parameters.Select(static p => $"{p.TypeName} {p.Name}"));
 
-        sb.AppendLine($"    public {method.ReturnTypeName} {method.Name}({parameterList})");
+        sb.AppendLine($"    public async {method.ReturnTypeName} {method.Name}({parameterList})");
         sb.AppendLine("    {");
 
         switch (method.OperationKind)
