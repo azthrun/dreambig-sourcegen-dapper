@@ -11,8 +11,8 @@
     <Description>Attribute-driven source-generated Dapper repository implementation with SQL Server-first support for CRUD, joins, and stored procedures.</Description>
     <Authors>DreamBig</Authors>
     <PackageTags>dapper;source-generator;orm;sql-server</PackageTags>
-    <PackageProjectUrl>https://github.com/yunqichen/dreambig-sourcegen-dapper</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/yunqichen/dreambig-sourcegen-dapper</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/azthrun/dreambig-sourcegen-dapper</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/azthrun/dreambig-sourcegen-dapper</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
