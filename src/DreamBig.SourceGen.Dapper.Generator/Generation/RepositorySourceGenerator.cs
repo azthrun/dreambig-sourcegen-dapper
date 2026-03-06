@@ -14,6 +14,7 @@ namespace DreamBig.SourceGen.Dapper.Generator.Generation;
 public sealed class RepositorySourceGenerator : IIncrementalGenerator
 {
     private const string DbRepositoryAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbRepositoryAttribute";
+    private const string DbUnitOfWorkAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbUnitOfWorkAttribute";
     private const string DbTableAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbTableAttribute";
     private const string DbColumnAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbColumnAttribute";
     private const string DbKeyAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbKeyAttribute";
@@ -45,6 +46,10 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         context.RegisterSourceOutput(compilationAndInterfaces, static (spc, payload) =>
         {
             var (compilation, candidates) = payload;
+            _ = compilation;
+            var generatedRepositories = new Dictionary<string, RepositoryModel>(StringComparer.Ordinal);
+            var failedRepositories = new HashSet<string>(StringComparer.Ordinal);
+
             foreach (var interfaceSymbol in candidates)
             {
                 if (!HasAttribute(interfaceSymbol, DbRepositoryAttribute))
@@ -62,11 +67,37 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
                 if (repository is null)
                 {
+                    failedRepositories.Add(interfaceSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat));
                     continue;
                 }
 
                 var source = RenderRepository(repository);
                 spc.AddSource($"{repository.ImplementationName}.g.cs", SourceText.From(source, Encoding.UTF8));
+                generatedRepositories[interfaceSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)] = repository;
+            }
+
+            foreach (var interfaceSymbol in candidates)
+            {
+                if (!HasAttribute(interfaceSymbol, DbUnitOfWorkAttribute))
+                {
+                    continue;
+                }
+
+                var diagnostics = new List<Diagnostic>();
+                var unitOfWork = BuildUnitOfWorkModel(interfaceSymbol, generatedRepositories, failedRepositories, diagnostics);
+
+                foreach (var diagnostic in diagnostics)
+                {
+                    spc.ReportDiagnostic(diagnostic);
+                }
+
+                if (unitOfWork is null)
+                {
+                    continue;
+                }
+
+                var source = RenderUnitOfWork(unitOfWork);
+                spc.AddSource($"{unitOfWork.ImplementationName}.g.cs", SourceText.From(source, Encoding.UTF8));
             }
         });
     }
@@ -110,6 +141,114 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             InterfaceQualifiedName: interfaceSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
             ImplementationName: interfaceSymbol.Name + "Generated",
             Methods: methods);
+    }
+
+    private static UnitOfWorkModel? BuildUnitOfWorkModel(
+        INamedTypeSymbol interfaceSymbol,
+        IReadOnlyDictionary<string, RepositoryModel> generatedRepositories,
+        ISet<string> failedRepositories,
+        List<Diagnostic> diagnostics)
+    {
+        var properties = new List<UnitOfWorkRepositoryPropertyModel>();
+        var hasInvalidMember = false;
+
+        foreach (var member in interfaceSymbol.GetMembers())
+        {
+            if (member is IMethodSymbol { MethodKind: MethodKind.PropertyGet or MethodKind.PropertySet })
+            {
+                continue;
+            }
+
+            if (member is not IPropertySymbol property)
+            {
+                diagnostics.Add(Diagnostic.Create(
+                    DiagnosticDescriptors.UnitOfWorkMemberInvalid,
+                    member.Locations.FirstOrDefault(),
+                    interfaceSymbol.Name,
+                    member.Name));
+                hasInvalidMember = true;
+                continue;
+            }
+
+            if (property.SetMethod is not null || property.GetMethod is null)
+            {
+                diagnostics.Add(Diagnostic.Create(
+                    DiagnosticDescriptors.UnitOfWorkMemberInvalid,
+                    property.Locations.FirstOrDefault(),
+                    interfaceSymbol.Name,
+                    property.Name));
+                hasInvalidMember = true;
+                continue;
+            }
+
+            if (property.Type is not INamedTypeSymbol { TypeKind: TypeKind.Interface } repositoryInterface
+                || !HasAttribute(repositoryInterface, DbRepositoryAttribute))
+            {
+                diagnostics.Add(Diagnostic.Create(
+                    DiagnosticDescriptors.UnitOfWorkRepositoryTypeInvalid,
+                    property.Locations.FirstOrDefault(),
+                    property.Name,
+                    interfaceSymbol.Name));
+                hasInvalidMember = true;
+                continue;
+            }
+
+            var repoInterfaceName = repositoryInterface.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            if (failedRepositories.Contains(repoInterfaceName) || !generatedRepositories.ContainsKey(repoInterfaceName))
+            {
+                diagnostics.Add(Diagnostic.Create(
+                    DiagnosticDescriptors.UnitOfWorkRepositoryGenerationFailed,
+                    property.Locations.FirstOrDefault(),
+                    property.Name,
+                    interfaceSymbol.Name,
+                    repositoryInterface.Name));
+                hasInvalidMember = true;
+                continue;
+            }
+
+            properties.Add(new UnitOfWorkRepositoryPropertyModel(
+                Name: property.Name,
+                TypeName: property.Type.ToDisplayString(NullableAwareTypeFormat),
+                RepositoryImplementationName: repositoryInterface.Name + "Generated"));
+        }
+
+        var duplicate = properties
+            .GroupBy(static p => p.Name, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(static g => g.Count() > 1);
+
+        if (duplicate is not null)
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.UnitOfWorkDuplicateProperty,
+                interfaceSymbol.Locations.FirstOrDefault(),
+                interfaceSymbol.Name,
+                duplicate.Key));
+            return null;
+        }
+
+        if (properties.Count == 0)
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.UnitOfWorkContainsNoRepositories,
+                interfaceSymbol.Locations.FirstOrDefault(),
+                interfaceSymbol.Name));
+            return null;
+        }
+
+        if (hasInvalidMember)
+        {
+            return null;
+        }
+
+        var ns = interfaceSymbol.ContainingNamespace.IsGlobalNamespace
+            ? null
+            : interfaceSymbol.ContainingNamespace.ToDisplayString();
+
+        return new UnitOfWorkModel(
+            Namespace: ns,
+            InterfaceQualifiedName: interfaceSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+            ImplementationName: interfaceSymbol.Name + "Generated",
+            RepositoryProperties: properties);
     }
 
     private static RepositoryMethodModel? BuildMethodModel(IMethodSymbol method, List<Diagnostic> diagnostics)
@@ -494,11 +633,33 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine("{");
         sb.AppendLine("    private readonly IDbConnection _connection;");
         sb.AppendLine("    private readonly IDbTransaction? _transaction;");
+        sb.AppendLine("    private readonly IGeneratedTransactionContext? _transactionContext;");
         sb.AppendLine();
         sb.AppendLine($"    public {model.ImplementationName}(IDbConnection connection, IDbTransaction? transaction = null)");
         sb.AppendLine("    {");
         sb.AppendLine("        _connection = connection ?? throw new ArgumentNullException(nameof(connection));");
         sb.AppendLine("        _transaction = transaction;");
+        sb.AppendLine("        _transactionContext = null;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine($"    public {model.ImplementationName}(IDbConnection connection, IGeneratedTransactionContext transactionContext)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        _connection = connection ?? throw new ArgumentNullException(nameof(connection));");
+        sb.AppendLine("        _transaction = null;");
+        sb.AppendLine("        _transactionContext = transactionContext ?? throw new ArgumentNullException(nameof(transactionContext));");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    private IDbTransaction? ResolveTransaction()");
+        sb.AppendLine("        => _transactionContext?.CurrentTransaction ?? _transaction;");
+        sb.AppendLine();
+        sb.AppendLine("    private void EnsureTransactionRequired(string methodName)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        if (ResolveTransaction() is not null)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            return;");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        throw new InvalidOperationException($\"Method '{methodName}' requires an active transaction.\");");
         sb.AppendLine("    }");
         sb.AppendLine();
 
@@ -556,6 +717,193 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         return sb.ToString();
     }
 
+    private static string RenderUnitOfWork(UnitOfWorkModel model)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("// <auto-generated />");
+        sb.AppendLine("#nullable enable");
+        sb.AppendLine("using System;");
+        sb.AppendLine("using System.Data;");
+        sb.AppendLine("using System.Threading;");
+        sb.AppendLine("using System.Threading.Tasks;");
+        sb.AppendLine("using DreamBig.SourceGen.Dapper.Internal;");
+
+        if (!string.IsNullOrWhiteSpace(model.Namespace))
+        {
+            sb.AppendLine($"namespace {model.Namespace};");
+            sb.AppendLine();
+        }
+
+        sb.AppendLine($"public sealed partial class {model.ImplementationName} : {model.InterfaceQualifiedName}, IGeneratedTransactionContext, IAsyncDisposable");
+        sb.AppendLine("{");
+        sb.AppendLine("    private readonly Func<IDbConnection> _connectionFactory;");
+        sb.AppendLine("    private IDbConnection? _connection;");
+        sb.AppendLine("    private IDbTransaction? _currentTransaction;");
+        sb.AppendLine("    private bool _isDisposed;");
+
+        foreach (var property in model.RepositoryProperties)
+        {
+            sb.AppendLine($"    private {property.RepositoryImplementationName}? _{property.Name};");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine($"    public {model.ImplementationName}(Func<IDbConnection> connectionFactory)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        _connectionFactory = connectionFactory ?? throw new ArgumentNullException(nameof(connectionFactory));");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    public IDbTransaction? CurrentTransaction => _currentTransaction;");
+        sb.AppendLine();
+
+        foreach (var property in model.RepositoryProperties)
+        {
+            sb.AppendLine($"    public {property.TypeName} {property.Name} => _{property.Name} ??= new {property.RepositoryImplementationName}(GetOrCreateConnection(), this);");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("    public async Task BeginTransactionAsync(IsolationLevel isolationLevel = IsolationLevel.ReadCommitted, CancellationToken cancellationToken = default)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        ThrowIfDisposed();");
+        sb.AppendLine();
+        sb.AppendLine("        if (_currentTransaction is not null)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            throw new InvalidOperationException(\"An active transaction already exists.\");");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        await EnsureConnectionOpenAsync(cancellationToken).ConfigureAwait(false);");
+        sb.AppendLine("        _currentTransaction = GetOrCreateConnection().BeginTransaction(isolationLevel);");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    public async Task CommitAsync(CancellationToken cancellationToken = default)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        ThrowIfDisposed();");
+        sb.AppendLine();
+        sb.AppendLine("        if (_currentTransaction is null)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            throw new InvalidOperationException(\"No active transaction exists to commit.\");");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        var transaction = _currentTransaction;");
+        sb.AppendLine();
+        sb.AppendLine("        if (transaction is System.Data.Common.DbTransaction dbTransaction)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            await dbTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);");
+        sb.AppendLine("        }");
+        sb.AppendLine("        else");
+        sb.AppendLine("        {");
+        sb.AppendLine("            _ = cancellationToken;");
+        sb.AppendLine("            transaction.Commit();");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        await DisposeTransactionAsync(transaction).ConfigureAwait(false);");
+        sb.AppendLine("        _currentTransaction = null;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    public async Task RollbackAsync(CancellationToken cancellationToken = default)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        ThrowIfDisposed();");
+        sb.AppendLine();
+        sb.AppendLine("        if (_currentTransaction is null)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            throw new InvalidOperationException(\"No active transaction exists to rollback.\");");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        var transaction = _currentTransaction;");
+        sb.AppendLine();
+        sb.AppendLine("        if (transaction is System.Data.Common.DbTransaction dbTransaction)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            await dbTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);");
+        sb.AppendLine("        }");
+        sb.AppendLine("        else");
+        sb.AppendLine("        {");
+        sb.AppendLine("            _ = cancellationToken;");
+        sb.AppendLine("            transaction.Rollback();");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        await DisposeTransactionAsync(transaction).ConfigureAwait(false);");
+        sb.AppendLine("        _currentTransaction = null;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    public async ValueTask DisposeAsync()");
+        sb.AppendLine("    {");
+        sb.AppendLine("        if (_isDisposed)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            return;");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        _isDisposed = true;");
+        sb.AppendLine();
+        sb.AppendLine("        if (_currentTransaction is not null)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            await DisposeTransactionAsync(_currentTransaction).ConfigureAwait(false);");
+        sb.AppendLine("            _currentTransaction = null;");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        if (_connection is IAsyncDisposable asyncDisposable)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            await asyncDisposable.DisposeAsync().ConfigureAwait(false);");
+        sb.AppendLine("        }");
+        sb.AppendLine("        else");
+        sb.AppendLine("        {");
+        sb.AppendLine("            _connection?.Dispose();");
+        sb.AppendLine("        }");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    private IDbConnection GetOrCreateConnection()");
+        sb.AppendLine("    {");
+        sb.AppendLine("        ThrowIfDisposed();");
+        sb.AppendLine();
+        sb.AppendLine("        if (_connection is not null)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            return _connection;");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        _connection = _connectionFactory() ?? throw new InvalidOperationException(\"The connection factory returned null.\");");
+        sb.AppendLine("        return _connection;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    private async Task EnsureConnectionOpenAsync(CancellationToken cancellationToken)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        var connection = GetOrCreateConnection();");
+        sb.AppendLine();
+        sb.AppendLine("        if (connection.State == ConnectionState.Open)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            return;");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        if (connection is System.Data.Common.DbConnection dbConnection)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            await dbConnection.OpenAsync(cancellationToken).ConfigureAwait(false);");
+        sb.AppendLine("            return;");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        _ = cancellationToken;");
+        sb.AppendLine("        connection.Open();");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    private static async ValueTask DisposeTransactionAsync(IDbTransaction transaction)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        if (transaction is IAsyncDisposable asyncDisposable)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            await asyncDisposable.DisposeAsync().ConfigureAwait(false);");
+        sb.AppendLine("            return;");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        transaction.Dispose();");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    private void ThrowIfDisposed()");
+        sb.AppendLine("    {");
+        sb.AppendLine("        if (_isDisposed)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            throw new ObjectDisposedException(GetType().Name);");
+        sb.AppendLine("        }");
+        sb.AppendLine("    }");
+        sb.AppendLine("}");
+
+        return sb.ToString();
+    }
+
     private static void RenderInsert(RepositoryMethodModel method, StringBuilder sb)
     {
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
@@ -566,11 +914,13 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         }
 
         var entityParameter = operationParameters[0].Name;
+        sb.AppendLine($"        EnsureTransactionRequired(\"{method.Name}\");");
+        sb.AppendLine("        var transaction = ResolveTransaction();");
         var writeColumns = method.Entity.Properties.Where(static p => !p.IsKey).ToList();
         var columnsSql = string.Join(", ", writeColumns.Select(p => Quote(p.ColumnName)));
         var valuesSql = string.Join(", ", writeColumns.Select(p => "@" + p.PropertyName));
         var sql = $"INSERT INTO {QualifiedTable(method.Entity)} ({columnsSql}) VALUES ({valuesSql});";
-        var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", {entityParameter}, _transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
+        var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", {entityParameter}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
 
         if (method.IsTaskWithoutResult)
         {
@@ -592,10 +942,12 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         }
 
         var entityParameter = operationParameters[0].Name;
+        sb.AppendLine($"        EnsureTransactionRequired(\"{method.Name}\");");
+        sb.AppendLine("        var transaction = ResolveTransaction();");
         var writeColumns = method.Entity.Properties.Where(static p => !p.IsKey).ToList();
         var setSql = string.Join(", ", writeColumns.Select(p => $"{Quote(p.ColumnName)} = @{p.PropertyName}"));
         var sql = $"UPDATE {QualifiedTable(method.Entity)} SET {setSql} WHERE {Quote(method.Entity.KeyProperty.ColumnName)} = @{method.Entity.KeyProperty.PropertyName};";
-        var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", {entityParameter}, _transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
+        var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", {entityParameter}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
 
         if (method.IsTaskWithoutResult)
         {
@@ -619,8 +971,10 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var table = method.Entity is null ? "[dbo].[Unknown]" : QualifiedTable(method.Entity);
         var keyColumn = method.Entity?.KeyProperty?.ColumnName ?? operationParameters[0].Name;
         var paramName = operationParameters[0].Name;
+        sb.AppendLine($"        EnsureTransactionRequired(\"{method.Name}\");");
+        sb.AppendLine("        var transaction = ResolveTransaction();");
         var sql = $"DELETE FROM {table} WHERE {Quote(keyColumn)} = @{paramName};";
-        var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", new {{ {paramName} }}, _transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
+        var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", new {{ {paramName} }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
 
         if (method.IsTaskWithoutResult)
         {
@@ -642,10 +996,11 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         }
 
         var keyParameter = operationParameters[0].Name;
+        sb.AppendLine("        var transaction = ResolveTransaction();");
         var selectSql = BuildEntitySelect(method.Entity);
         var sql = $"{selectSql} WHERE {Quote(method.Entity.KeyProperty.ColumnName)} = @{keyParameter};";
 
-        sb.AppendLine($"        var rows = await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ {keyParameter} }}, _transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+        sb.AppendLine($"        var rows = await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ {keyParameter} }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
         sb.AppendLine("        return rows.FirstOrDefault();");
     }
 
@@ -659,7 +1014,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
         var sql = BuildEntitySelect(method.Entity) + ";";
 
-        sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", transaction: _transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+        sb.AppendLine("        var transaction = ResolveTransaction();");
+        sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", transaction: transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
     }
 
     private static void RenderGetPage(RepositoryMethodModel method, StringBuilder sb)
@@ -673,7 +1029,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var orderBy = method.Entity.KeyProperty?.ColumnName ?? method.Entity.Properties.FirstOrDefault()?.ColumnName ?? "Id";
         var sql = $"{BuildEntitySelect(method.Entity)} ORDER BY {Quote(orderBy)} OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY;";
 
-        sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ skip, take }}, _transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+        sb.AppendLine("        var transaction = ResolveTransaction();");
+        sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ skip, take }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
     }
 
     private static void RenderQuery(RepositoryMethodModel method, StringBuilder sb)
@@ -703,7 +1060,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             ? "null"
             : "new { " + string.Join(", ", operationParameters.Select(static p => p.Name)) + " }";
 
-        sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", {anonymousParam}, _transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+        sb.AppendLine("        var transaction = ResolveTransaction();");
+        sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", {anonymousParam}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
     }
 
     private static void RenderStoredProcedure(RepositoryMethodModel method, StringBuilder sb)
@@ -711,6 +1069,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var spAttribute = method.QueryMetadata.StoredProcedure;
         var procedureName = spAttribute ?? "[dbo].[UnknownProcedure]";
 
+        sb.AppendLine($"        EnsureTransactionRequired(\"{method.Name}\");");
+        sb.AppendLine("        var transaction = ResolveTransaction();");
         sb.AppendLine("        var dynamicParameters = new DynamicParameters();");
         foreach (var parameter in method.Parameters.Where(static p => !p.IsCancellationToken))
         {
@@ -742,7 +1102,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             .Select(static p => $"\"{p.ParameterName}\"")
             .ToList();
 
-        sb.AppendLine($"        var result = await _connection.QueryStoredProcedureGeneratedAsync<{method.ElementTypeName ?? "dynamic"}>(\"{EscapeSql(procedureName)}\", dynamicParameters, new[] {{ {string.Join(", ", outputNames)} }}, _transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+        sb.AppendLine($"        var result = await _connection.QueryStoredProcedureGeneratedAsync<{method.ElementTypeName ?? "dynamic"}>(\"{EscapeSql(procedureName)}\", dynamicParameters, new[] {{ {string.Join(", ", outputNames)} }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
 
         if (method.ReturnsProcedureResult)
         {
@@ -880,6 +1240,17 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         string InterfaceQualifiedName,
         string ImplementationName,
         IReadOnlyList<RepositoryMethodModel> Methods);
+
+    private sealed record UnitOfWorkModel(
+        string? Namespace,
+        string InterfaceQualifiedName,
+        string ImplementationName,
+        IReadOnlyList<UnitOfWorkRepositoryPropertyModel> RepositoryProperties);
+
+    private sealed record UnitOfWorkRepositoryPropertyModel(
+        string Name,
+        string TypeName,
+        string RepositoryImplementationName);
 
     private sealed record RepositoryMethodModel(
         string Name,

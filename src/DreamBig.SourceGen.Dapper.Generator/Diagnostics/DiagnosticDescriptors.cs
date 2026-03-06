@@ -59,4 +59,44 @@ internal static class DiagnosticDescriptors
         category: "DreamBig.SourceGen.Dapper",
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor UnitOfWorkMemberInvalid = new(
+        id: "DBSGD008",
+        title: "Unit of Work member is invalid",
+        messageFormat: "Unit of Work interface '{0}' contains unsupported member '{1}'. Only read-only repository properties are allowed.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor UnitOfWorkRepositoryTypeInvalid = new(
+        id: "DBSGD009",
+        title: "Unit of Work repository property type is invalid",
+        messageFormat: "Property '{0}' on Unit of Work interface '{1}' must be an interface marked with [DbRepository].",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor UnitOfWorkContainsNoRepositories = new(
+        id: "DBSGD010",
+        title: "Unit of Work contains no repository properties",
+        messageFormat: "Unit of Work interface '{0}' must define at least one read-only repository property.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor UnitOfWorkRepositoryGenerationFailed = new(
+        id: "DBSGD011",
+        title: "Unit of Work references repository that failed generation",
+        messageFormat: "Property '{0}' on Unit of Work interface '{1}' references repository '{2}', but repository generation failed due to diagnostics.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor UnitOfWorkDuplicateProperty = new(
+        id: "DBSGD012",
+        title: "Unit of Work contains duplicate repository property names",
+        messageFormat: "Unit of Work interface '{0}' defines duplicate repository property name '{1}'.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
 }

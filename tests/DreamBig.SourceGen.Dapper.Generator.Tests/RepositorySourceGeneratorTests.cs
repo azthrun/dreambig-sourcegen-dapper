@@ -251,6 +251,191 @@ public interface ICustomerRepository
         generated.ShouldNotContain("public async global::System.Threading.Tasks.Task<global::Demo.Customer?> GetByIdCustomer");
     }
 
+    [Fact]
+    public void ShouldGenerateUnitOfWorkImplementation()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers", PrimaryKey = "Id")]
+public sealed class Customer
+{
+    public int Id { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<int> InsertCustomer(Customer entity, CancellationToken cancellationToken);
+    Task<IEnumerable<Customer>> GetAllCustomers(CancellationToken cancellationToken);
+}
+
+[DbRepository]
+public interface IOrderRepository
+{
+    Task<int> DeleteOrder(int id, CancellationToken cancellationToken);
+}
+
+[DbUnitOfWork]
+public interface IAppUnitOfWork
+{
+    ICustomerRepository Customers { get; }
+    IOrderRepository Orders { get; }
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("public sealed partial class IAppUnitOfWorkGenerated");
+        generated.ShouldContain("BeginTransactionAsync");
+        generated.ShouldContain("CommitAsync");
+        generated.ShouldContain("RollbackAsync");
+        generated.ShouldContain("public global::Demo.ICustomerRepository Customers => _Customers ??= new ICustomerRepositoryGenerated");
+        generated.ShouldContain("public global::Demo.IOrderRepository Orders => _Orders ??= new IOrderRepositoryGenerated");
+        generated.ShouldContain("public ICustomerRepositoryGenerated(");
+        generated.ShouldContain("transactionContext)");
+        generated.ShouldContain("EnsureTransactionRequired(\"InsertCustomer\")");
+        generated.ShouldContain("EnsureTransactionRequired(\"DeleteOrder\")");
+        generated.ShouldContain("var transaction = ResolveTransaction();");
+    }
+
+    [Fact]
+    public void ShouldReportUnitOfWorkMemberInvalidDiagnostic()
+    {
+        const string source = """
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbUnitOfWork]
+public interface IAppUnitOfWork
+{
+    int InvalidMethod();
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD008").ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ShouldReportUnitOfWorkRepositoryTypeInvalidDiagnostic()
+    {
+        const string source = """
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+public interface INotRepository
+{
+}
+
+[DbUnitOfWork]
+public interface IAppUnitOfWork
+{
+    INotRepository InvalidRepository { get; }
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD009").ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ShouldReportUnitOfWorkContainsNoRepositoriesDiagnostic()
+    {
+        const string source = """
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbUnitOfWork]
+public interface IAppUnitOfWork
+{
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD010").ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ShouldReportUnitOfWorkRepositoryGenerationFailedDiagnostic()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    public int Id { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<int> UpdateCustomer(Customer entity, CancellationToken cancellationToken);
+}
+
+[DbUnitOfWork]
+public interface IAppUnitOfWork
+{
+    ICustomerRepository Customers { get; }
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD011").ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ShouldReportUnitOfWorkDuplicatePropertyDiagnostic()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers", PrimaryKey = "Id")]
+public sealed class Customer
+{
+    public int Id { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<int> DeleteCustomer(int id, CancellationToken cancellationToken);
+}
+
+[DbUnitOfWork]
+public interface IAppUnitOfWork
+{
+    ICustomerRepository Customers { get; }
+    ICustomerRepository customers { get; }
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD012").ShouldBeTrue();
+    }
+
     private static GeneratorResult RunGenerator(string source)
     {
         var syntaxTree = CSharpSyntaxTree.ParseText(source);

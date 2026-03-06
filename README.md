@@ -24,6 +24,9 @@ Runtime library supports:
 ## Quick Start
 
 ```csharp
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using DreamBig.SourceGen.Dapper.Attributes;
 
 [DbTable("Customers", Schema = "dbo")]
@@ -41,11 +44,11 @@ public sealed class Customer
 [DbRepository]
 public interface ICustomerRepository
 {
-    int InsertCustomer(Customer entity);
-    int UpdateCustomer(Customer entity);
-    int DeleteCustomer(int id);
-    Customer? GetByIdCustomer(int id);
-    IEnumerable<Customer> GetAllCustomers();
+    Task<int> InsertCustomer(Customer entity, CancellationToken cancellationToken);
+    Task<int> UpdateCustomer(Customer entity, CancellationToken cancellationToken);
+    Task<int> DeleteCustomer(int id, CancellationToken cancellationToken);
+    Task<Customer?> GetByIdCustomer(int id, CancellationToken cancellationToken);
+    Task<IEnumerable<Customer>> GetAllCustomers(CancellationToken cancellationToken);
 }
 ```
 
@@ -57,6 +60,8 @@ You can define the primary key directly on `DbTableAttribute` using `PrimaryKey`
 This is useful when the entity class comes from another team/package and you do not want to modify the entity source.
 
 ```csharp
+using System.Threading;
+using System.Threading.Tasks;
 using DreamBig.SourceGen.Dapper.Attributes;
 
 [DbTable("Customers", Schema = "dbo", PrimaryKey = "CustomerId")]
@@ -69,9 +74,9 @@ public sealed class ExternalCustomer
 [DbRepository]
 public interface IExternalCustomerRepository
 {
-    int UpdateCustomer(ExternalCustomer entity);
-    int DeleteCustomer(int customerId);
-    ExternalCustomer? GetByIdCustomer(int customerId);
+    Task<int> UpdateCustomer(ExternalCustomer entity, CancellationToken cancellationToken);
+    Task<int> DeleteCustomer(int customerId, CancellationToken cancellationToken);
+    Task<ExternalCustomer?> GetByIdCustomer(int customerId, CancellationToken cancellationToken);
 }
 ```
 
@@ -82,19 +87,67 @@ public interface IExternalCustomerRepository
 ## Join Example
 
 ```csharp
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
 [DbQuery(From = "[dbo].[Customers] c", Where = "c.[IsActive] = @isActive", OrderBy = "c.[Id] DESC")]
 [DbJoin(JoinType.Left, "[dbo].[Orders] o", "c.Id", "o.CustomerId")]
-IEnumerable<CustomerSummary> QueryActive(bool isActive);
+Task<IEnumerable<CustomerSummary>> QueryActive(bool isActive, CancellationToken cancellationToken);
 ```
 
 ## Stored Procedure Example
 
 ```csharp
+using System.Data;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+using DreamBig.SourceGen.Dapper.Internal;
+
 [DbStoredProcedure("usp_customer_summary", Schema = "dbo")]
-GeneratedProcedureResult<CustomerSummary> GetSummary(
+Task<GeneratedProcedureResult<CustomerSummary>> GetSummary(
     [DbParam("@customerId", DbType = DbType.Int32)] int customerId,
-    [DbParam("@total", Direction = DbParamDirection.Output)] int total);
+    [DbParam("@total", Direction = DbParamDirection.Output)] int total,
+    CancellationToken cancellationToken);
 ```
+
+## Unit Of Work Example
+
+```csharp
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+[DbUnitOfWork]
+public interface IAppUnitOfWork
+{
+    ICustomerRepository Customers { get; }
+    IOrderRepository Orders { get; }
+}
+
+// generated type: IAppUnitOfWorkGenerated
+var uow = new IAppUnitOfWorkGenerated(() => new SqlConnection(connectionString));
+
+await uow.BeginTransactionAsync(cancellationToken: cancellationToken);
+try
+{
+    await uow.Customers.UpdateCustomer(customer, cancellationToken);
+    await uow.Orders.DeleteOrder(orderId, cancellationToken);
+    await uow.CommitAsync(cancellationToken);
+}
+catch
+{
+    await uow.RollbackAsync(cancellationToken);
+    throw;
+}
+```
+
+Notes:
+- `Insert*`, `Update*`, `Delete*`, and stored procedure methods require an active transaction and throw `InvalidOperationException` otherwise.
+- Read/query methods can execute with or without an active transaction.
 
 ## Known Limitations (v1)
 

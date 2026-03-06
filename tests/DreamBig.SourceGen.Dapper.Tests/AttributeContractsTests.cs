@@ -9,6 +9,13 @@ namespace DreamBig.SourceGen.Dapper.Tests;
 public sealed class AttributeContractsTests
 {
     [Fact]
+    public void DbUnitOfWorkAttribute_ShouldBeCreatable()
+    {
+        var attribute = new DbUnitOfWorkAttribute();
+        attribute.ShouldNotBeNull();
+    }
+
+    [Fact]
     public void DbTableAttribute_ShouldSetDefaults()
     {
         var attribute = new DbTableAttribute("Customers");
