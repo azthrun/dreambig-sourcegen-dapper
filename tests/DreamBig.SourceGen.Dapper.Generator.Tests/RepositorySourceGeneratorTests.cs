@@ -122,6 +122,38 @@ public interface ICustomerRepository
         result.Diagnostics.Any(d => d.Id == "DBSGD001").ShouldBeTrue();
     }
 
+    [Fact]
+    public void ShouldUseDbTablePrimaryKeyWithoutDbKeyAttribute()
+    {
+        const string source = """
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers", PrimaryKey = "Id")]
+public sealed class Customer
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    int UpdateCustomer(Customer entity);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD001").ShouldBeFalse();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("WHERE [Id] = @Id;");
+    }
+
     private static GeneratorResult RunGenerator(string source)
     {
         var syntaxTree = CSharpSyntaxTree.ParseText(source);

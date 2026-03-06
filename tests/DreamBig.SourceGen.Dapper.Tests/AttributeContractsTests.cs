@@ -15,6 +15,18 @@ public sealed class AttributeContractsTests
 
         attribute.TableName.ShouldBe("Customers");
         attribute.Schema.ShouldBe("dbo");
+        attribute.PrimaryKey.ShouldBeNull();
+    }
+
+    [Fact]
+    public void DbTableAttribute_ShouldAllowPrimaryKeyDefinition()
+    {
+        var attribute = new DbTableAttribute("Customers")
+        {
+            PrimaryKey = "Id",
+        };
+
+        attribute.PrimaryKey.ShouldBe("Id");
     }
 
     [Theory]

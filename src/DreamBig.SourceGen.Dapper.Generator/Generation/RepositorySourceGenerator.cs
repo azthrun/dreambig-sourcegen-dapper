@@ -285,6 +285,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             : null;
 
         var schema = ReadNamedAttributeString(tableAttribute, "Schema") ?? "dbo";
+        var configuredPrimaryKey = ReadNamedAttributeString(tableAttribute, "PrimaryKey");
         if (string.IsNullOrWhiteSpace(tableName))
         {
             tableName = type.Name;
@@ -307,12 +308,16 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             var columnName = columnAttribute?.ConstructorArguments.Length > 0
                 ? columnAttribute.ConstructorArguments[0].Value?.ToString()
                 : null;
+            var resolvedColumnName = string.IsNullOrWhiteSpace(columnName) ? property.Name : columnName!;
+            var isConfiguredKey = !string.IsNullOrWhiteSpace(configuredPrimaryKey)
+                && (string.Equals(property.Name, configuredPrimaryKey, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(resolvedColumnName, configuredPrimaryKey, StringComparison.OrdinalIgnoreCase));
 
             properties.Add(new EntityPropertyModel(
                 PropertyName: property.Name,
-                ColumnName: string.IsNullOrWhiteSpace(columnName) ? property.Name : columnName!,
+                ColumnName: resolvedColumnName,
                 TypeName: property.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-                IsKey: HasAttribute(property, DbKeyAttribute)));
+                IsKey: HasAttribute(property, DbKeyAttribute) || isConfiguredKey));
         }
 
         var duplicate = properties

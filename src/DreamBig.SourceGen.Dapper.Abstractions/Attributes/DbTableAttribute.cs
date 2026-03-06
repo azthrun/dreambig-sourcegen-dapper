@@ -26,4 +26,10 @@ public sealed class DbTableAttribute : Attribute
     /// Gets or sets the schema name. Defaults to <c>dbo</c>.
     /// </summary>
     public string Schema { get; set; } = "dbo";
+
+    /// <summary>
+    /// Gets or sets the primary key property name or mapped column name.
+    /// This can be used instead of decorating an entity property with <c>[DbKey]</c>.
+    /// </summary>
+    public string? PrimaryKey { get; set; }
 }
