@@ -22,6 +22,10 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     private const string DbJoinAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbJoinAttribute";
     private const string DbStoredProcedureAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbStoredProcedureAttribute";
     private const string DbParamAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbParamAttribute";
+    private static readonly SymbolDisplayFormat NullableAwareTypeFormat =
+        SymbolDisplayFormat.FullyQualifiedFormat.WithMiscellaneousOptions(
+            SymbolDisplayFormat.FullyQualifiedFormat.MiscellaneousOptions
+            | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier);
 
     /// <summary>
     /// Initializes the incremental source generation pipeline.
@@ -122,7 +126,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
         var parameters = method.Parameters.Select(static p => new MethodParameterModel(
             Name: p.Name,
-            TypeName: p.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+            TypeName: p.Type.ToDisplayString(NullableAwareTypeFormat),
             ParameterName: ResolveDbParamName(p),
             DbParamAttribute: ReadDbParamAttribute(p),
             IsCancellationToken: IsCancellationTokenType(p.Type))).ToList();
@@ -175,7 +179,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             case RepositoryOperationKind.GetAll:
             case RepositoryOperationKind.GetPage:
             case RepositoryOperationKind.Query:
-                var entityCandidate = methodShape.ElementType;
+                var entityCandidate = methodShape.ElementType as INamedTypeSymbol;
                 if (entityCandidate is not null)
                 {
                     entity = BuildEntityModel(entityCandidate, method, diagnostics);
@@ -183,7 +187,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
                 break;
             case RepositoryOperationKind.StoredProcedure:
-                var spEntity = methodShape.ElementType;
+                var spEntity = methodShape.ElementType as INamedTypeSymbol;
                 if (spEntity is not null)
                 {
                     entity = BuildEntityModel(spEntity, method, diagnostics);
@@ -258,12 +262,12 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
         return new RepositoryMethodModel(
             Name: method.Name,
-            ReturnTypeName: method.ReturnType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+            ReturnTypeName: method.ReturnType.ToDisplayString(NullableAwareTypeFormat),
             IsAsync: methodShape.IsAsync,
             ReturnsEnumerable: methodShape.ReturnsEnumerable,
             ReturnsProcedureResult: methodShape.IsProcedureResult,
             IsTaskWithoutResult: methodShape.IsTaskWithoutResult,
-            ElementTypeName: methodShape.ElementType?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+            ElementTypeName: methodShape.ElementType?.ToDisplayString(NullableAwareTypeFormat),
             OperationKind: operationKind,
             Parameters: parameters,
             CancellationTokenParameterName: cancellationTokenParameter.Name,
@@ -355,7 +359,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             properties.Add(new EntityPropertyModel(
                 PropertyName: property.Name,
                 ColumnName: resolvedColumnName,
-                TypeName: property.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                TypeName: property.Type.ToDisplayString(NullableAwareTypeFormat),
                 IsKey: HasAttribute(property, DbKeyAttribute) || isConfiguredKey));
         }
 
@@ -374,7 +378,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         }
 
         return new EntityModel(
-            ClrTypeName: type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+            ClrTypeName: type.ToDisplayString(NullableAwareTypeFormat),
             Schema: schema,
             TableName: tableName!,
             Properties: properties,
@@ -951,7 +955,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         bool IsTaskWithoutResult,
         bool ReturnsEnumerable,
         bool IsProcedureResult,
-        INamedTypeSymbol? ElementType)
+        ITypeSymbol? ElementType)
     {
         public static MethodShape FromReturnType(ITypeSymbol returnType)
         {
@@ -971,14 +975,14 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 && generic.IsGenericType
                 && generic.Name is "IEnumerable" or "IReadOnlyList" or "List")
             {
-                return new MethodShape(true, false, false, true, false, generic.TypeArguments[0] as INamedTypeSymbol);
+                return new MethodShape(true, false, false, true, false, generic.TypeArguments[0]);
             }
 
             if (returnType is INamedTypeSymbol procedureResult
                 && procedureResult.IsGenericType
                 && procedureResult.Name == "GeneratedProcedureResult")
             {
-                return new MethodShape(true, false, false, false, true, procedureResult.TypeArguments[0] as INamedTypeSymbol);
+                return new MethodShape(true, false, false, false, true, procedureResult.TypeArguments[0]);
             }
 
             if (returnType.SpecialType is SpecialType.System_Int32)
@@ -986,8 +990,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 return new MethodShape(true, false, false, false, false, null);
             }
 
-            return returnType as INamedTypeSymbol is { TypeKind: TypeKind.Class or TypeKind.Struct }
-                ? new MethodShape(true, false, false, false, false, returnType as INamedTypeSymbol)
+            return returnType is INamedTypeSymbol { TypeKind: TypeKind.Class or TypeKind.Struct }
+                ? new MethodShape(true, false, false, false, false, returnType)
                 : new MethodShape(false, false, false, false, false, null);
         }
     }

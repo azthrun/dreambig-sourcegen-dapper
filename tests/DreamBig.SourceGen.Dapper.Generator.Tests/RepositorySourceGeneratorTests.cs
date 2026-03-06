@@ -56,6 +56,7 @@ public interface ICustomerRepository
         generated.ShouldContain("DELETE FROM [dbo].[Customers]");
         generated.ShouldContain("SELECT [Id] AS [Id], [full_name] AS [Name], [Email] AS [Email] FROM [dbo].[Customers]");
         generated.ShouldContain("public async global::System.Threading.Tasks.Task<int> InsertCustomer");
+        generated.ShouldContain("public async global::System.Threading.Tasks.Task<global::Demo.Customer?> GetByIdCustomer");
     }
 
     [Fact]
@@ -214,6 +215,40 @@ public interface ICustomerRepository
 
         var result = RunGenerator(source);
         result.Diagnostics.Any(d => d.Id == "DBSGD007").ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ShouldPreserveNonNullableReturnTypeAsDefined()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers", PrimaryKey = "Id")]
+public sealed class Customer
+{
+    public int Id { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<Customer> GetByIdCustomer(int id, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("public async global::System.Threading.Tasks.Task<global::Demo.Customer> GetByIdCustomer");
+        generated.ShouldNotContain("public async global::System.Threading.Tasks.Task<global::Demo.Customer?> GetByIdCustomer");
     }
 
     private static GeneratorResult RunGenerator(string source)
