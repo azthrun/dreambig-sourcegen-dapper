@@ -22,6 +22,11 @@ public sealed class DbQueryAttribute : Attribute
     public string? OrderBy { get; set; }
 
     /// <summary>
+    /// Gets or sets ORDER BY direction.
+    /// </summary>
+    public OrderByDirection OrderByDirection { get; set; } = OrderByDirection.Asc;
+
+    /// <summary>
     /// Gets or sets optional JOIN expression override.
     /// </summary>
     public string? Join { get; set; }

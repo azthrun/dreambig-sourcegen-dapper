@@ -92,10 +92,15 @@ using System.Threading;
 using System.Threading.Tasks;
 using DreamBig.SourceGen.Dapper.Attributes;
 
-[DbQuery(From = "[dbo].[Customers] c", Where = "c.[IsActive] = @isActive", OrderBy = "c.[Id] DESC")]
-[DbJoin(JoinType.Left, "[dbo].[Orders] o", "c.Id", "o.CustomerId")]
+[DbQuery(From = "[dbo].[Customers]", Where = "[IsActive] = @isActive", OrderBy = "Id", OrderByDirection = OrderByDirection.Desc)]
+[DbJoin(JoinType = JoinType.Left, JoinTable = typeof(Order), JoinColumnA = "Id", JoinColumnB = "CustomerId")]
 Task<IEnumerable<CustomerSummary>> QueryActive(bool isActive, CancellationToken cancellationToken);
 ```
+
+Notes:
+- The generator assigns table aliases (`t0`, `t1`, ...) automatically.
+- `OrderBy` expects a column/property name only; use `OrderByDirection` to control sort direction.
+- `JoinColumnA` and `JoinColumnB` must match CLR property names on the base entity and join entity (validated at compile time).
 
 ## Stored Procedure Example
 

@@ -7,48 +7,27 @@ namespace DreamBig.SourceGen.Dapper.Attributes;
 public sealed class DbJoinAttribute : Attribute
 {
     /// <summary>
-    /// Initializes a new instance of the <see cref="DbJoinAttribute"/> class.
+    /// Gets or sets the join type.
     /// </summary>
-    /// <param name="joinType">Join type.</param>
-    /// <param name="table">Joined table expression (table name or table + alias).</param>
-    /// <param name="left">Left expression of join condition.</param>
-    /// <param name="right">Right expression of join condition.</param>
-    public DbJoinAttribute(JoinType joinType, string table, string left, string right)
-    {
-        JoinType = joinType;
-        Table = string.IsNullOrWhiteSpace(table)
-            ? throw new ArgumentException("Join table cannot be null or whitespace.", nameof(table))
-            : table;
-        Left = string.IsNullOrWhiteSpace(left)
-            ? throw new ArgumentException("Join left condition cannot be null or whitespace.", nameof(left))
-            : left;
-        Right = string.IsNullOrWhiteSpace(right)
-            ? throw new ArgumentException("Join right condition cannot be null or whitespace.", nameof(right))
-            : right;
-    }
+    public JoinType JoinType { get; set; }
 
     /// <summary>
-    /// Gets the join type.
+    /// Gets or sets the joined table entity type.
     /// </summary>
-    public JoinType JoinType { get; }
+    public Type? JoinTable { get; set; }
 
     /// <summary>
-    /// Gets the join table expression.
+    /// Gets or sets the left-side join column name (CLR property name).
     /// </summary>
-    public string Table { get; }
+    public string? JoinColumnA { get; set; }
 
     /// <summary>
-    /// Gets the left side of the join condition.
+    /// Gets or sets the right-side join column name (CLR property name).
     /// </summary>
-    public string Left { get; }
+    public string? JoinColumnB { get; set; }
 
     /// <summary>
-    /// Gets the right side of the join condition.
+    /// Gets or sets an optional join filter appended to the ON clause.
     /// </summary>
-    public string Right { get; }
-
-    /// <summary>
-    /// Gets or sets optional alias metadata for readability and diagnostics.
-    /// </summary>
-    public string? Alias { get; set; }
+    public string? Where { get; set; }
 }

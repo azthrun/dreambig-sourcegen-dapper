@@ -388,7 +388,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             }
         }
 
-        var queryMetadata = ReadQueryMetadata(method, diagnostics);
+        var queryMetadata = ReadQueryMetadata(method, entity, diagnostics);
         if (operationKind == RepositoryOperationKind.StoredProcedure)
         {
             var spAttribute = method.GetAttributes().FirstOrDefault(a => IsAttribute(a.AttributeClass, DbStoredProcedureAttribute));
@@ -414,49 +414,100 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             QueryMetadata: queryMetadata);
     }
 
-    private static QueryMetadata ReadQueryMetadata(IMethodSymbol method, List<Diagnostic> diagnostics)
+    private static QueryMetadata ReadQueryMetadata(IMethodSymbol method, EntityModel? entity, List<Diagnostic> diagnostics)
     {
         var queryAttribute = method.GetAttributes().FirstOrDefault(a => IsAttribute(a.AttributeClass, DbQueryAttribute));
         var from = ReadNamedAttributeString(queryAttribute, "From");
         var where = ReadNamedAttributeString(queryAttribute, "Where");
         var orderBy = ReadNamedAttributeString(queryAttribute, "OrderBy");
+        var orderByDirectionValue = ReadNamedAttributeInt(queryAttribute, "OrderByDirection") ?? 0;
+        var orderByDirection = orderByDirectionValue == 1 ? OrderByDirectionModel.Desc : OrderByDirectionModel.Asc;
         var joinOverride = ReadNamedAttributeString(queryAttribute, "Join");
 
         var joins = method.GetAttributes()
             .Where(a => IsAttribute(a.AttributeClass, DbJoinAttribute))
-            .Select(static a =>
+            .Select((a, index) =>
             {
-                var joinType = a.ConstructorArguments[0].Value switch
+                var joinTypeValue = ReadNamedAttributeInt(a, "JoinType") ?? 0;
+                var joinType = joinTypeValue switch
                 {
                     1 => "Left",
                     2 => "Right",
                     3 => "Full",
                     _ => "Inner",
                 };
-                var table = a.ConstructorArguments[1].Value?.ToString() ?? string.Empty;
-                var left = a.ConstructorArguments[2].Value?.ToString() ?? string.Empty;
-                var right = a.ConstructorArguments[3].Value?.ToString() ?? string.Empty;
-                var alias = ReadNamedAttributeString(a, "Alias");
-                return new QueryJoinModel(joinType, table, left, right, alias);
+
+                var joinTableType = ReadNamedAttributeType(a, "JoinTable");
+                var joinColumnA = ReadNamedAttributeString(a, "JoinColumnA");
+                var joinColumnB = ReadNamedAttributeString(a, "JoinColumnB");
+                var joinWhere = ReadNamedAttributeString(a, "Where");
+
+                if (joinTableType is null)
+                {
+                    diagnostics.Add(Diagnostic.Create(
+                        DiagnosticDescriptors.JoinPropertyMissing,
+                        method.Locations.FirstOrDefault(),
+                        method.Name,
+                        "JoinTable"));
+                }
+
+                if (string.IsNullOrWhiteSpace(joinColumnA))
+                {
+                    diagnostics.Add(Diagnostic.Create(
+                        DiagnosticDescriptors.JoinPropertyMissing,
+                        method.Locations.FirstOrDefault(),
+                        method.Name,
+                        "JoinColumnA"));
+                }
+
+                if (string.IsNullOrWhiteSpace(joinColumnB))
+                {
+                    diagnostics.Add(Diagnostic.Create(
+                        DiagnosticDescriptors.JoinPropertyMissing,
+                        method.Locations.FirstOrDefault(),
+                        method.Name,
+                        "JoinColumnB"));
+                }
+
+                var joinTableEntity = joinTableType is null ? null : BuildEntityModel(joinTableType, method, diagnostics);
+                var table = joinTableEntity is null ? "[dbo].[Unknown]" : QualifiedTable(joinTableEntity);
+                var alias = $"t{index + 1}";
+
+                var leftColumn = ResolveJoinColumn(entity, joinColumnA, method, diagnostics, isLeft: true);
+                var rightColumn = ResolveJoinColumn(joinTableEntity, joinColumnB, method, diagnostics, isLeft: false);
+
+                return new QueryJoinModel(joinType, table, alias, leftColumn, rightColumn, joinWhere);
             })
             .ToList();
 
-        foreach (var join in joins)
+        string? orderByColumn = null;
+        if (!string.IsNullOrWhiteSpace(orderBy))
         {
-            if (string.IsNullOrWhiteSpace(join.Left)
-                || string.IsNullOrWhiteSpace(join.Right)
-                || join.Left.IndexOf('.') < 0
-                || join.Right.IndexOf('.') < 0)
+            if (entity is null)
             {
                 diagnostics.Add(Diagnostic.Create(
-                    DiagnosticDescriptors.JoinDefinitionInvalid,
+                    DiagnosticDescriptors.OrderByColumnInvalid,
                     method.Locations.FirstOrDefault(),
                     method.Name,
-                    $"{join.Left} = {join.Right}"));
+                    orderBy,
+                    "(unknown)"));
+            }
+            else if (!TryResolveColumn(entity, orderBy, out var resolvedOrderBy))
+            {
+                diagnostics.Add(Diagnostic.Create(
+                    DiagnosticDescriptors.OrderByColumnInvalid,
+                    method.Locations.FirstOrDefault(),
+                    method.Name,
+                    orderBy,
+                    entity.ClrTypeName));
+            }
+            else
+            {
+                orderByColumn = resolvedOrderBy;
             }
         }
 
-        return new QueryMetadata(from, where, orderBy, joinOverride, joins);
+        return new QueryMetadata(from, where, orderByColumn, orderByDirection, joinOverride, joins);
     }
 
     private static EntityModel? BuildEntityModel(INamedTypeSymbol type, IMethodSymbol method, List<Diagnostic> diagnostics)
@@ -1037,6 +1088,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     {
         var entity = method.Entity;
         var from = method.QueryMetadata.From;
+        var baseAlias = "t0";
 
         if (string.IsNullOrWhiteSpace(from))
         {
@@ -1045,15 +1097,17 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
         var selectColumns = entity is null
             ? "*"
-            : string.Join(", ", entity.Properties.Select(p => $"{Quote(p.ColumnName)} AS [{p.PropertyName}]"));
+            : string.Join(", ", entity.Properties.Select(p => $"{baseAlias}.{Quote(p.ColumnName)} AS [{p.PropertyName}]"));
 
         var joinSql = string.IsNullOrWhiteSpace(method.QueryMetadata.Join)
-            ? BuildJoinClauses(method.QueryMetadata.Joins)
+            ? BuildJoinClauses(method.QueryMetadata.Joins, baseAlias)
             : " " + method.QueryMetadata.Join;
 
         var whereSql = string.IsNullOrWhiteSpace(method.QueryMetadata.Where) ? string.Empty : $" WHERE {method.QueryMetadata.Where}";
-        var orderBySql = string.IsNullOrWhiteSpace(method.QueryMetadata.OrderBy) ? string.Empty : $" ORDER BY {method.QueryMetadata.OrderBy}";
-        var sql = $"SELECT {selectColumns} FROM {from}{joinSql}{whereSql}{orderBySql};";
+        var orderBySql = method.QueryMetadata.OrderByColumn is null
+            ? string.Empty
+            : $" ORDER BY {baseAlias}.{Quote(method.QueryMetadata.OrderByColumn)} {ToSql(method.QueryMetadata.OrderByDirection)}";
+        var sql = $"SELECT {selectColumns} FROM {from} {baseAlias}{joinSql}{whereSql}{orderBySql};";
 
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
         var anonymousParam = operationParameters.Count == 0
@@ -1125,7 +1179,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         return $"SELECT {selectColumns} FROM {QualifiedTable(entity)}";
     }
 
-    private static string BuildJoinClauses(IReadOnlyList<QueryJoinModel> joins)
+    private static string BuildJoinClauses(IReadOnlyList<QueryJoinModel> joins, string baseAlias)
     {
         if (joins.Count == 0)
         {
@@ -1142,7 +1196,13 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 _ => "INNER JOIN",
             };
 
-            return $" {keyword} {join.Table} ON {join.Left} = {join.Right}";
+            var onClause = $"{baseAlias}.{Quote(join.LeftColumn)} = {join.Alias}.{Quote(join.RightColumn)}";
+            if (!string.IsNullOrWhiteSpace(join.Where))
+            {
+                onClause += $" AND ({join.Where})";
+            }
+
+            return $" {keyword} {join.Table} {join.Alias} ON {onClause}";
         });
 
         return string.Concat(clauses);
@@ -1193,6 +1253,97 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
         return null;
     }
+
+    private static int? ReadNamedAttributeInt(AttributeData? attributeData, string argumentName)
+    {
+        if (attributeData is null)
+        {
+            return null;
+        }
+
+        foreach (var argument in attributeData.NamedArguments)
+        {
+            if (argument.Key == argumentName)
+            {
+                return argument.Value.Value as int?;
+            }
+        }
+
+        return null;
+    }
+
+    private static INamedTypeSymbol? ReadNamedAttributeType(AttributeData? attributeData, string argumentName)
+    {
+        if (attributeData is null)
+        {
+            return null;
+        }
+
+        foreach (var argument in attributeData.NamedArguments)
+        {
+            if (argument.Key == argumentName)
+            {
+                return argument.Value.Value as INamedTypeSymbol;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryResolveColumn(EntityModel entity, string propertyName, out string columnName)
+    {
+        var match = entity.Properties.FirstOrDefault(p =>
+            string.Equals(p.PropertyName, propertyName, StringComparison.OrdinalIgnoreCase));
+
+        if (match is null)
+        {
+            columnName = string.Empty;
+            return false;
+        }
+
+        columnName = match.ColumnName;
+        return true;
+    }
+
+    private static string ResolveJoinColumn(
+        EntityModel? entity,
+        string? propertyName,
+        IMethodSymbol method,
+        List<Diagnostic> diagnostics,
+        bool isLeft)
+    {
+        if (string.IsNullOrWhiteSpace(propertyName))
+        {
+            return string.Empty;
+        }
+
+        if (entity is null)
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.JoinEntityMissing,
+                method.Locations.FirstOrDefault(),
+                method.Name,
+                isLeft ? "left" : "right"));
+            return propertyName;
+        }
+
+        if (!TryResolveColumn(entity, propertyName, out var columnName))
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.JoinColumnInvalid,
+                method.Locations.FirstOrDefault(),
+                method.Name,
+                propertyName,
+                entity.ClrTypeName,
+                isLeft ? "left" : "right"));
+            return propertyName;
+        }
+
+        return columnName;
+    }
+
+    private static string ToSql(OrderByDirectionModel direction)
+        => direction == OrderByDirectionModel.Desc ? "DESC" : "ASC";
 
     private static string ResolveDbParamName(IParameterSymbol parameter)
     {
@@ -1289,14 +1440,21 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     private sealed record QueryMetadata(
         string? From,
         string? Where,
-        string? OrderBy,
+        string? OrderByColumn,
+        OrderByDirectionModel OrderByDirection,
         string? Join,
         IReadOnlyList<QueryJoinModel> Joins)
     {
         public string? StoredProcedure { get; init; }
     }
 
-    private sealed record QueryJoinModel(string JoinType, string Table, string Left, string Right, string? Alias);
+    private sealed record QueryJoinModel(
+        string JoinType,
+        string Table,
+        string Alias,
+        string LeftColumn,
+        string RightColumn,
+        string? Where);
 
     private sealed record DbParamAttributeModel(DbParamDirectionModel Direction, System.Data.DbType? DbType, int? Size);
 
@@ -1305,6 +1463,12 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         Input,
         Output,
         InputOutput,
+    }
+
+    private enum OrderByDirectionModel
+    {
+        Asc,
+        Desc,
     }
 
     private enum RepositoryOperationKind

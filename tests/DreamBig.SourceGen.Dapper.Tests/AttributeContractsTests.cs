@@ -104,24 +104,19 @@ public sealed class AttributeContractsTests
     [Fact]
     public void DbJoinAttribute_ShouldSetValues()
     {
-        var attribute = new DbJoinAttribute(JoinType.Left, "[dbo].[Orders] o", "c.Id", "o.CustomerId")
+        var attribute = new DbJoinAttribute
         {
-            Alias = "o",
+            JoinType = JoinType.Left,
+            JoinTable = typeof(string),
+            JoinColumnA = "Id",
+            JoinColumnB = "CustomerId",
+            Where = "[IsActive] = 1",
         };
 
         attribute.JoinType.ShouldBe(JoinType.Left);
-        attribute.Table.ShouldBe("[dbo].[Orders] o");
-        attribute.Left.ShouldBe("c.Id");
-        attribute.Right.ShouldBe("o.CustomerId");
-        attribute.Alias.ShouldBe("o");
-    }
-
-    [Theory]
-    [InlineData("", "c.Id", "o.CustomerId")]
-    [InlineData("[dbo].[Orders] o", "", "o.CustomerId")]
-    [InlineData("[dbo].[Orders] o", "c.Id", "")]
-    public void DbJoinAttribute_ShouldValidateConstructorArguments(string table, string left, string right)
-    {
-        Should.Throw<ArgumentException>(() => new DbJoinAttribute(JoinType.Inner, table, left, right));
+        attribute.JoinTable.ShouldBe(typeof(string));
+        attribute.JoinColumnA.ShouldBe("Id");
+        attribute.JoinColumnB.ShouldBe("CustomerId");
+        attribute.Where.ShouldBe("[IsActive] = 1");
     }
 }

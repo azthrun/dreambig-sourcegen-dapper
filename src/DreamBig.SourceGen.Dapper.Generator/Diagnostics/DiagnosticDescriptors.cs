@@ -44,6 +44,38 @@ internal static class DiagnosticDescriptors
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
+    public static readonly DiagnosticDescriptor JoinPropertyMissing = new(
+        id: "DBSGD013",
+        title: "Join property is missing",
+        messageFormat: "Method '{0}' contains a join missing required property '{1}'.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor JoinEntityMissing = new(
+        id: "DBSGD014",
+        title: "Join entity is missing",
+        messageFormat: "Method '{0}' cannot resolve the {1}-side join entity for validation.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor JoinColumnInvalid = new(
+        id: "DBSGD015",
+        title: "Join column is invalid",
+        messageFormat: "Method '{0}' contains join column '{1}' that is not a property on '{2}' ({3} side).",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor OrderByColumnInvalid = new(
+        id: "DBSGD016",
+        title: "OrderBy column is invalid",
+        messageFormat: "Method '{0}' contains OrderBy column '{1}' that is not a property on '{2}'.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
     public static readonly DiagnosticDescriptor AsyncReturnTypeRequired = new(
         id: "DBSGD006",
         title: "Async return type is required",

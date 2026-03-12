@@ -72,21 +72,30 @@ using DreamBig.SourceGen.Dapper.Internal;
 
 namespace Demo;
 
-public sealed class CustomerSummary
+[DbTable("Customers", Schema = "dbo")]
+public sealed class Customer
 {
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
+    public bool IsActive { get; set; }
+}
+
+[DbTable("Orders", Schema = "dbo")]
+public sealed class Order
+{
+    public int Id { get; set; }
+    public int CustomerId { get; set; }
 }
 
 [DbRepository]
 public interface ICustomerReadRepository
 {
-    [DbQuery(From = "[dbo].[Customers] c", Where = "c.[IsActive] = @isActive", OrderBy = "c.[Id] DESC")]
-    [DbJoin(JoinType.Left, "[dbo].[Orders] o", "c.Id", "o.CustomerId")]
-    Task<IEnumerable<CustomerSummary>> QueryActive(bool isActive, CancellationToken cancellationToken);
+    [DbQuery(From = "[dbo].[Customers]", Where = "[IsActive] = @isActive", OrderBy = "Id", OrderByDirection = OrderByDirection.Desc)]
+    [DbJoin(JoinType = JoinType.Left, JoinTable = typeof(Order), JoinColumnA = "Id", JoinColumnB = "CustomerId")]
+    Task<IEnumerable<Customer>> QueryActive(bool isActive, CancellationToken cancellationToken);
 
     [DbStoredProcedure("usp_customer_summary", Schema = "dbo")]
-    Task<GeneratedProcedureResult<CustomerSummary>> GetSummary([DbParam("@customerId", DbType = DbType.Int32)] int customerId, [DbParam("@total", Direction = DbParamDirection.Output)] int total, CancellationToken cancellationToken);
+    Task<GeneratedProcedureResult<Customer>> GetSummary([DbParam("@customerId", DbType = DbType.Int32)] int customerId, [DbParam("@total", Direction = DbParamDirection.Output)] int total, CancellationToken cancellationToken);
 }
 """;
 
@@ -97,10 +106,49 @@ public interface ICustomerReadRepository
             Environment.NewLine,
             result.GeneratedTrees.Select(static t => t.GetText().ToString()));
 
-        generated.ShouldContain("LEFT OUTER JOIN [dbo].[Orders] o ON c.Id = o.CustomerId");
+        generated.ShouldContain("LEFT OUTER JOIN [dbo].[Orders] t1 ON t0.[Id] = t1.[CustomerId]");
+        generated.ShouldContain("FROM [dbo].[Customers] t0");
+        generated.ShouldContain("ORDER BY t0.[Id] DESC");
         generated.ShouldContain("[dbo].[usp_customer_summary]");
         generated.ShouldContain("System.Data.ParameterDirection.Output");
         generated.ShouldContain("QueryStoredProcedureGeneratedAsync<");
+    }
+
+    [Fact]
+    public void ShouldReportInvalidJoinColumnDiagnostic()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers", Schema = "dbo")]
+public sealed class Customer
+{
+    public int Id { get; set; }
+}
+
+[DbTable("Orders", Schema = "dbo")]
+public sealed class Order
+{
+    public int Id { get; set; }
+    public int CustomerId { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerReadRepository
+{
+    [DbQuery(From = "[dbo].[Customers]")]
+    [DbJoin(JoinType = JoinType.Left, JoinTable = typeof(Order), JoinColumnA = "Missing", JoinColumnB = "CustomerId")]
+    Task<IEnumerable<Customer>> QueryActive(CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD015").ShouldBeTrue();
     }
 
     [Fact]
