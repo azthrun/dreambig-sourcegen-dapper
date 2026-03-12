@@ -90,8 +90,8 @@ public sealed class Order
 [DbRepository]
 public interface ICustomerReadRepository
 {
-    [DbQuery(From = "[dbo].[Customers]", Where = "[IsActive] = @isActive", OrderBy = "Id", OrderByDirection = OrderByDirection.Desc)]
-    [DbJoin(JoinType = JoinType.Left, JoinTable = typeof(Order), JoinColumnA = "Id", JoinColumnB = "CustomerId")]
+    [DbQuery(From = "Customers", Schema = "dbo", Where = "[IsActive] = @isActive", OrderBy = "Id", OrderByDirection = OrderByDirection.Desc)]
+    [DbJoin(JoinType = JoinType.Left, JoinTable = typeof(Order), JoinColumnA = "Id", JoinColumnB = "CustomerId", Schema = "sales")]
     Task<IEnumerable<Customer>> QueryActive(bool isActive, CancellationToken cancellationToken);
 
     [DbStoredProcedure("usp_customer_summary", Schema = "dbo")]
@@ -106,7 +106,7 @@ public interface ICustomerReadRepository
             Environment.NewLine,
             result.GeneratedTrees.Select(static t => t.GetText().ToString()));
 
-        generated.ShouldContain("LEFT OUTER JOIN [dbo].[Orders] t1 ON t0.[Id] = t1.[CustomerId]");
+        generated.ShouldContain("LEFT OUTER JOIN [sales].[Orders] t1 ON t0.[Id] = t1.[CustomerId]");
         generated.ShouldContain("FROM [dbo].[Customers] t0");
         generated.ShouldContain("ORDER BY t0.[Id] DESC");
         generated.ShouldContain("[dbo].[usp_customer_summary]");
@@ -149,6 +149,41 @@ public interface ICustomerReadRepository
 
         var result = RunGenerator(source);
         result.Diagnostics.Any(d => d.Id == "DBSGD015").ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ShouldRespectQualifiedFromWithoutApplyingSchema()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers", Schema = "sales")]
+public sealed class Customer
+{
+    public int Id { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerReadRepository
+{
+    [DbQuery(From = "[dbo].[Customers]", Schema = "sales", OrderBy = "Id")]
+    Task<IEnumerable<Customer>> QueryActive(CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("FROM [dbo].[Customers] t0");
     }
 
     [Fact]

@@ -92,8 +92,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using DreamBig.SourceGen.Dapper.Attributes;
 
-[DbQuery(From = "[dbo].[Customers]", Where = "[IsActive] = @isActive", OrderBy = "Id", OrderByDirection = OrderByDirection.Desc)]
-[DbJoin(JoinType = JoinType.Left, JoinTable = typeof(Order), JoinColumnA = "Id", JoinColumnB = "CustomerId")]
+[DbQuery(From = "Customers", Schema = "dbo", Where = "[IsActive] = @isActive", OrderBy = "Id", OrderByDirection = OrderByDirection.Desc)]
+[DbJoin(JoinType = JoinType.Left, JoinTable = typeof(Order), JoinColumnA = "Id", JoinColumnB = "CustomerId", Schema = "sales")]
 Task<IEnumerable<CustomerSummary>> QueryActive(bool isActive, CancellationToken cancellationToken);
 ```
 

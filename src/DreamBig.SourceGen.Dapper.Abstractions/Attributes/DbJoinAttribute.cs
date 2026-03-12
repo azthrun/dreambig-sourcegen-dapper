@@ -17,6 +17,11 @@ public sealed class DbJoinAttribute : Attribute
     public Type? JoinTable { get; set; }
 
     /// <summary>
+    /// Gets or sets the default schema for the joined table when not inferred from the entity.
+    /// </summary>
+    public string Schema { get; set; } = "dbo";
+
+    /// <summary>
     /// Gets or sets the left-side join column name (CLR property name).
     /// </summary>
     public string? JoinColumnA { get; set; }

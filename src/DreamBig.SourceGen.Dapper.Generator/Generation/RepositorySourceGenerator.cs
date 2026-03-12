@@ -419,6 +419,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var queryAttribute = method.GetAttributes().FirstOrDefault(a => IsAttribute(a.AttributeClass, DbQueryAttribute));
         var from = ReadNamedAttributeString(queryAttribute, "From");
         var where = ReadNamedAttributeString(queryAttribute, "Where");
+        var querySchema = ReadNamedAttributeString(queryAttribute, "Schema") ?? "dbo";
         var orderBy = ReadNamedAttributeString(queryAttribute, "OrderBy");
         var orderByDirectionValue = ReadNamedAttributeInt(queryAttribute, "OrderByDirection") ?? 0;
         var orderByDirection = orderByDirectionValue == 1 ? OrderByDirectionModel.Desc : OrderByDirectionModel.Asc;
@@ -441,6 +442,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 var joinColumnA = ReadNamedAttributeString(a, "JoinColumnA");
                 var joinColumnB = ReadNamedAttributeString(a, "JoinColumnB");
                 var joinWhere = ReadNamedAttributeString(a, "Where");
+                var joinSchema = ReadNamedAttributeString(a, "Schema") ?? "dbo";
 
                 if (joinTableType is null)
                 {
@@ -470,7 +472,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 }
 
                 var joinTableEntity = joinTableType is null ? null : BuildEntityModel(joinTableType, method, diagnostics);
-                var table = joinTableEntity is null ? "[dbo].[Unknown]" : QualifiedTable(joinTableEntity);
+                var table = ResolveJoinTable(joinTableEntity, joinSchema);
                 var alias = $"t{index + 1}";
 
                 var leftColumn = ResolveJoinColumn(entity, joinColumnA, method, diagnostics, isLeft: true);
@@ -507,7 +509,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             }
         }
 
-        return new QueryMetadata(from, where, orderByColumn, orderByDirection, joinOverride, joins);
+        return new QueryMetadata(from, querySchema, where, orderByColumn, orderByDirection, joinOverride, joins);
     }
 
     private static EntityModel? BuildEntityModel(INamedTypeSymbol type, IMethodSymbol method, List<Diagnostic> diagnostics)
@@ -1094,6 +1096,10 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         {
             from = entity is null ? "[dbo].[Unknown]" : QualifiedTable(entity);
         }
+        else if (!IsQualifiedTableExpression(from))
+        {
+            from = QualifiedTable(method.QueryMetadata.Schema, from);
+        }
 
         var selectColumns = entity is null
             ? "*"
@@ -1210,6 +1216,29 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
     private static string QualifiedTable(EntityModel entity)
         => $"{Quote(entity.Schema)}.{Quote(entity.TableName)}";
+
+    private static string QualifiedTable(string schema, string table)
+        => $"{Quote(schema)}.{Quote(table)}";
+
+    private static bool IsQualifiedTableExpression(string value)
+        => value.IndexOf('[', StringComparison.Ordinal) >= 0
+            || value.IndexOf(']', StringComparison.Ordinal) >= 0
+            || value.IndexOf('.', StringComparison.Ordinal) >= 0;
+
+    private static string ResolveJoinTable(EntityModel? joinEntity, string joinSchema)
+    {
+        if (joinEntity is null)
+        {
+            return "[dbo].[Unknown]";
+        }
+
+        if (!string.Equals(joinSchema, "dbo", StringComparison.OrdinalIgnoreCase))
+        {
+            return QualifiedTable(joinSchema, joinEntity.TableName);
+        }
+
+        return QualifiedTable(joinEntity);
+    }
 
     private static string Quote(string identifier)
         => $"[{identifier.Replace("]", "]]")}]";
@@ -1439,6 +1468,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
     private sealed record QueryMetadata(
         string? From,
+        string Schema,
         string? Where,
         string? OrderByColumn,
         OrderByDirectionModel OrderByDirection,
