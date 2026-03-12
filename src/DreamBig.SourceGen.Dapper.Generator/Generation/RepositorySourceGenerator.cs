@@ -494,7 +494,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                     orderBy,
                     "(unknown)"));
             }
-            else if (!TryResolveColumn(entity, orderBy, out var resolvedOrderBy))
+            else if (!TryResolveColumn(entity, orderBy!, out var resolvedOrderBy))
             {
                 diagnostics.Add(Diagnostic.Create(
                     DiagnosticDescriptors.OrderByColumnInvalid,
@@ -1096,9 +1096,9 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         {
             from = entity is null ? "[dbo].[Unknown]" : QualifiedTable(entity);
         }
-        else if (!IsQualifiedTableExpression(from))
+        else if (!IsQualifiedTableExpression(from!))
         {
-            from = QualifiedTable(method.QueryMetadata.Schema, from);
+            from = QualifiedTable(method.QueryMetadata.Schema, from!);
         }
 
         var selectColumns = entity is null
@@ -1192,7 +1192,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return string.Empty;
         }
 
-        var clauses = joins.Select(static join =>
+        var clauses = joins.Select(join =>
         {
             var keyword = join.JoinType switch
             {
@@ -1221,9 +1221,9 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         => $"{Quote(schema)}.{Quote(table)}";
 
     private static bool IsQualifiedTableExpression(string value)
-        => value.IndexOf('[', StringComparison.Ordinal) >= 0
-            || value.IndexOf(']', StringComparison.Ordinal) >= 0
-            || value.IndexOf('.', StringComparison.Ordinal) >= 0;
+        => value.IndexOf("[", StringComparison.Ordinal) >= 0
+            || value.IndexOf("]", StringComparison.Ordinal) >= 0
+            || value.IndexOf(".", StringComparison.Ordinal) >= 0;
 
     private static string ResolveJoinTable(EntityModel? joinEntity, string joinSchema)
     {
@@ -1353,10 +1353,10 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 method.Locations.FirstOrDefault(),
                 method.Name,
                 isLeft ? "left" : "right"));
-            return propertyName;
+            return propertyName ?? string.Empty;
         }
 
-        if (!TryResolveColumn(entity, propertyName, out var columnName))
+        if (!TryResolveColumn(entity, propertyName!, out var columnName))
         {
             diagnostics.Add(Diagnostic.Create(
                 DiagnosticDescriptors.JoinColumnInvalid,
@@ -1365,7 +1365,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 propertyName,
                 entity.ClrTypeName,
                 isLeft ? "left" : "right"));
-            return propertyName;
+            return propertyName ?? string.Empty;
         }
 
         return columnName;
