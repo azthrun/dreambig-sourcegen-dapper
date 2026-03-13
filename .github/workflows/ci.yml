@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      approve:
+        description: "Approve beta publish (owner only)"
+        type: boolean
+        required: true
+        default: false
 
 jobs:
   build-test:
@@ -30,3 +37,94 @@ jobs:
 
       - name: Validate Pack
         run: dotnet pack src/DreamBig.SourceGen.Dapper.Package/DreamBig.SourceGen.Dapper.Package.csproj --configuration Release --no-build
+
+  publish-beta:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Guard Approval
+        run: |
+          if [[ "${{ github.actor }}" != "${{ github.repository_owner }}" ]]; then
+            echo "Only the repo owner can approve and publish."
+            exit 1
+          fi
+          if [[ "${{ github.event.inputs.approve }}" != "true" ]]; then
+            echo "Approval input not granted. Set approve=true to continue."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Resolve Next Beta Version
+        shell: bash
+        run: |
+          set -euo pipefail
+          SEMVER_TAGS="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$' || true)"
+          if [[ -z "$SEMVER_TAGS" ]]; then
+            echo "No semver tags found matching vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-beta.N"
+            exit 1
+          fi
+
+          BASES="$(echo "$SEMVER_TAGS" | sed -E 's/-beta\.[0-9]+$//' | sort -u)"
+          LATEST_BASE="$(echo "$BASES" | sort -V | tail -n1)"
+
+          BETA_TAGS="$(echo "$SEMVER_TAGS" | grep -E "^${LATEST_BASE}-beta\.[0-9]+$" || true)"
+          if [[ -n "$BETA_TAGS" ]]; then
+            MAX_BETA="$(echo "$BETA_TAGS" | sed -E 's/^.*-beta\.([0-9]+)$/\1/' | sort -n | tail -n1)"
+            NEXT_BETA="$((MAX_BETA + 1))"
+            BETA_TAG="${LATEST_BASE}-beta.${NEXT_BETA}"
+          else
+            VERSION="${LATEST_BASE#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+            NEXT_MINOR="$((MINOR + 1))"
+            BETA_TAG="v${MAJOR}.${NEXT_MINOR}.0-beta.1"
+          fi
+
+          PACKAGE_VERSION="${BETA_TAG#v}"
+          echo "BETA_TAG=$BETA_TAG" >> "$GITHUB_ENV"
+          echo "PACKAGE_VERSION=$PACKAGE_VERSION" >> "$GITHUB_ENV"
+          echo "Resolved beta tag: $BETA_TAG"
+
+      - name: Restore
+        run: dotnet restore DreamBig.SourceGen.Dapper.sln
+
+      - name: Build
+        run: dotnet build DreamBig.SourceGen.Dapper.sln --configuration Release --no-restore -p:Version="${{ env.PACKAGE_VERSION }}" -p:PackageVersion="${{ env.PACKAGE_VERSION }}"
+
+      - name: Test
+        run: dotnet test DreamBig.SourceGen.Dapper.sln --configuration Release --no-build -p:Version="${{ env.PACKAGE_VERSION }}" -p:PackageVersion="${{ env.PACKAGE_VERSION }}"
+
+      - name: Pack
+        run: |
+          rm -f artifacts/nuget/*.nupkg artifacts/nuget/*.snupkg || true
+          dotnet pack src/DreamBig.SourceGen.Dapper.Package/DreamBig.SourceGen.Dapper.Package.csproj --configuration Release --no-build -p:Version="${{ env.PACKAGE_VERSION }}" -p:PackageVersion="${{ env.PACKAGE_VERSION }}"
+          test -f "artifacts/nuget/DreamBig.SourceGen.Dapper.${{ env.PACKAGE_VERSION }}.nupkg"
+
+      - name: Publish to NuGet
+        run: dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.${{ env.PACKAGE_VERSION }}.nupkg" --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
+
+      - name: Create Tag
+        run: |
+          git tag "${{ env.BETA_TAG }}"
+          git push origin "${{ env.BETA_TAG }}"
+
+      - name: Summary
+        run: |
+          {
+            echo "## Beta Publish Summary"
+            echo ""
+            echo "- Tag: \`${{ env.BETA_TAG }}\`"
+            echo "- Package version: \`${{ env.PACKAGE_VERSION }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
