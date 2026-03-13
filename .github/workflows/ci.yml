@@ -5,13 +5,6 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      approve:
-        description: "Approve beta publish (owner only)"
-        type: boolean
-        required: true
-        default: false
 
 jobs:
   build-test:
@@ -39,23 +32,15 @@ jobs:
         run: dotnet pack src/DreamBig.SourceGen.Dapper.Package/DreamBig.SourceGen.Dapper.Package.csproj --configuration Release --no-build
 
   publish-beta:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: build-test
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    environment:
+      name: beta-release
 
     steps:
-      - name: Guard Approval
-        run: |
-          if [[ "${{ github.actor }}" != "${{ github.repository_owner }}" ]]; then
-            echo "Only the repo owner can approve and publish."
-            exit 1
-          fi
-          if [[ "${{ github.event.inputs.approve }}" != "true" ]]; then
-            echo "Approval input not granted. Set approve=true to continue."
-            exit 1
-          fi
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
