@@ -584,7 +584,7 @@ public interface IAppUnitOfWork
 
         var generator = new RepositorySourceGenerator();
         var optionsProvider = new TestAnalyzerConfigOptionsProvider(dialect);
-        GeneratorDriver driver = CSharpGeneratorDriver.Create(generator, optionsProvider: optionsProvider);
+        GeneratorDriver driver = CSharpGeneratorDriver.Create([generator.AsSourceGenerator()], optionsProvider: optionsProvider);
         driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out _, out _);
 
         var runResult = driver.GetRunResult();
@@ -639,6 +639,15 @@ public interface IAppUnitOfWork
         }
 
         public override bool TryGetValue(string key, out string value)
-            => _options.TryGetValue(key, out value);
+        {
+            if (_options.TryGetValue(key, out var found))
+            {
+                value = found ?? string.Empty;
+                return true;
+            }
+
+            value = string.Empty;
+            return false;
+        }
     }
 }
