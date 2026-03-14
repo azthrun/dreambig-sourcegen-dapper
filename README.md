@@ -15,8 +15,6 @@
 
 Runtime library supports:
 
-- `net8.0`
-- `net9.0`
 - `net10.0`
 
 ## Install
