@@ -3,6 +3,7 @@ using System.Text;
 using DreamBig.SourceGen.Dapper.Generator.Diagnostics;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Text;
 
 namespace DreamBig.SourceGen.Dapper.Generator.Generation;
