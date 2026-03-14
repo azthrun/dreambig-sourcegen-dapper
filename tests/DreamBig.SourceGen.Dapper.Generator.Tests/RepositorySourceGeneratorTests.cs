@@ -95,7 +95,7 @@ public interface ICustomerRepository
             Environment.NewLine,
             result.GeneratedTrees.Select(static t => t.GetText().ToString()));
 
-        generated.ShouldContain("FROM \"public\".\"Customers\"");
+        generated.ShouldContain("FROM \\\"public\\\".\\\"Customers\\\"");
         generated.ShouldContain("LIMIT @take OFFSET @skip");
     }
 

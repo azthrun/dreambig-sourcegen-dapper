@@ -86,7 +86,7 @@ public static class DreamBigDapperSqlServerServiceCollectionExtensions
             throw new ArgumentNullException(nameof(connectionStringFactory));
         }
 
-        services.AddSingleton(connectionStringFactory);
+        services.AddSingleton<Func<IServiceProvider, string>>(connectionStringFactory);
         services.AddScoped<IDbConnection>(static provider =>
         {
             var resolved = ResolveConnectionString(provider);
