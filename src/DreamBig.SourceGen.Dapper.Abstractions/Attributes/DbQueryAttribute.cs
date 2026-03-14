@@ -14,7 +14,7 @@ public sealed class DbQueryAttribute : Attribute
     /// <summary>
     /// Gets or sets the default schema for unqualified FROM values.
     /// </summary>
-    public string Schema { get; set; } = "dbo";
+    public string? Schema { get; set; }
 
     /// <summary>
     /// Gets or sets optional WHERE expression.

@@ -23,6 +23,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     private const string DbJoinAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbJoinAttribute";
     private const string DbStoredProcedureAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbStoredProcedureAttribute";
     private const string DbParamAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbParamAttribute";
+    private const string DialectPropertyName = "build_property.DreamBigDapperDialect";
     private static readonly SymbolDisplayFormat NullableAwareTypeFormat =
         SymbolDisplayFormat.FullyQualifiedFormat.WithMiscellaneousOptions(
             SymbolDisplayFormat.FullyQualifiedFormat.MiscellaneousOptions
@@ -41,14 +42,20 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             .Where(static symbol => symbol is not null)
             .Select(static (symbol, _) => symbol!);
 
-        var compilationAndInterfaces = context.CompilationProvider.Combine(interfaces.Collect());
+        var dialect = context.AnalyzerConfigOptionsProvider
+            .Select(static (provider, _) => ResolveDialect(provider));
+
+        var compilationAndInterfaces = context.CompilationProvider
+            .Combine(interfaces.Collect())
+            .Combine(dialect);
 
         context.RegisterSourceOutput(compilationAndInterfaces, static (spc, payload) =>
         {
-            var (compilation, candidates) = payload;
+            var ((compilation, candidates), dialect) = payload;
             _ = compilation;
             var generatedRepositories = new Dictionary<string, RepositoryModel>(StringComparer.Ordinal);
             var failedRepositories = new HashSet<string>(StringComparer.Ordinal);
+            var generatedUnitsOfWork = new List<UnitOfWorkModel>();
 
             foreach (var interfaceSymbol in candidates)
             {
@@ -71,7 +78,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                     continue;
                 }
 
-                var source = RenderRepository(repository);
+                var source = RenderRepository(repository, dialect);
                 spc.AddSource($"{repository.ImplementationName}.g.cs", SourceText.From(source, Encoding.UTF8));
                 generatedRepositories[interfaceSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)] = repository;
             }
@@ -98,7 +105,11 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
                 var source = RenderUnitOfWork(unitOfWork);
                 spc.AddSource($"{unitOfWork.ImplementationName}.g.cs", SourceText.From(source, Encoding.UTF8));
+                generatedUnitsOfWork.Add(unitOfWork);
             }
+
+            var diSource = RenderServiceRegistration(generatedRepositories.Values, generatedUnitsOfWork);
+            spc.AddSource("DreamBigDapperGeneratedServiceCollectionExtensions.g.cs", SourceText.From(diSource, Encoding.UTF8));
         });
     }
 
@@ -395,8 +406,16 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             var spName = spAttribute?.ConstructorArguments.Length > 0
                 ? spAttribute.ConstructorArguments[0].Value as string
                 : null;
-            var spSchema = ReadNamedAttributeString(spAttribute, "Schema") ?? "dbo";
-            queryMetadata = queryMetadata with { StoredProcedure = $"{Quote(spSchema)}.{Quote(spName ?? string.Empty)}" };
+            var spSchemaExplicit = TryReadNamedAttributeString(spAttribute, "Schema", out var spSchema);
+            if (!spSchemaExplicit)
+            {
+                spSchema = null;
+            }
+
+            queryMetadata = queryMetadata with
+            {
+                StoredProcedure = new StoredProcedureMetadata(spName ?? string.Empty, spSchema, spSchemaExplicit),
+            };
         }
 
         return new RepositoryMethodModel(
@@ -419,7 +438,11 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var queryAttribute = method.GetAttributes().FirstOrDefault(a => IsAttribute(a.AttributeClass, DbQueryAttribute));
         var from = ReadNamedAttributeString(queryAttribute, "From");
         var where = ReadNamedAttributeString(queryAttribute, "Where");
-        var querySchema = ReadNamedAttributeString(queryAttribute, "Schema") ?? "dbo";
+        var schemaExplicit = TryReadNamedAttributeString(queryAttribute, "Schema", out var querySchema);
+        if (!schemaExplicit)
+        {
+            querySchema = null;
+        }
         var orderBy = ReadNamedAttributeString(queryAttribute, "OrderBy");
         var orderByDirectionValue = ReadNamedAttributeInt(queryAttribute, "OrderByDirection") ?? 0;
         var orderByDirection = orderByDirectionValue == 1 ? OrderByDirectionModel.Desc : OrderByDirectionModel.Asc;
@@ -442,7 +465,11 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 var joinColumnA = ReadNamedAttributeString(a, "JoinColumnA");
                 var joinColumnB = ReadNamedAttributeString(a, "JoinColumnB");
                 var joinWhere = ReadNamedAttributeString(a, "Where");
-                var joinSchema = ReadNamedAttributeString(a, "Schema") ?? "dbo";
+                var joinSchemaExplicit = TryReadNamedAttributeString(a, "Schema", out var joinSchema);
+                if (!joinSchemaExplicit)
+                {
+                    joinSchema = null;
+                }
 
                 if (joinTableType is null)
                 {
@@ -472,13 +499,15 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 }
 
                 var joinTableEntity = joinTableType is null ? null : BuildEntityModel(joinTableType, method, diagnostics);
-                var table = ResolveJoinTable(joinTableEntity, joinSchema);
+                var tableName = joinTableEntity?.TableName ?? "Unknown";
+                var resolvedSchema = joinSchemaExplicit ? joinSchema : joinTableEntity?.Schema;
+                var resolvedSchemaExplicit = joinSchemaExplicit || (joinTableEntity?.IsSchemaExplicit ?? false);
                 var alias = $"t{index + 1}";
 
                 var leftColumn = ResolveJoinColumn(entity, joinColumnA, method, diagnostics, isLeft: true);
                 var rightColumn = ResolveJoinColumn(joinTableEntity, joinColumnB, method, diagnostics, isLeft: false);
 
-                return new QueryJoinModel(joinType, table, alias, leftColumn, rightColumn, joinWhere);
+                return new QueryJoinModel(joinType, tableName, resolvedSchema, resolvedSchemaExplicit, alias, leftColumn, rightColumn, joinWhere);
             })
             .ToList();
 
@@ -509,7 +538,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             }
         }
 
-        return new QueryMetadata(from, querySchema, where, orderByColumn, orderByDirection, joinOverride, joins);
+        return new QueryMetadata(from, querySchema, schemaExplicit, where, orderByColumn, orderByDirection, joinOverride, joins);
     }
 
     private static EntityModel? BuildEntityModel(INamedTypeSymbol type, IMethodSymbol method, List<Diagnostic> diagnostics)
@@ -519,7 +548,11 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             ? tableAttribute.ConstructorArguments[0].Value?.ToString()
             : null;
 
-        var schema = ReadNamedAttributeString(tableAttribute, "Schema") ?? "dbo";
+        var schemaExplicit = TryReadNamedAttributeString(tableAttribute, "Schema", out var schema);
+        if (!schemaExplicit)
+        {
+            schema = null;
+        }
         var configuredPrimaryKey = ReadNamedAttributeString(tableAttribute, "PrimaryKey");
         if (string.IsNullOrWhiteSpace(tableName))
         {
@@ -572,6 +605,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         return new EntityModel(
             ClrTypeName: type.ToDisplayString(NullableAwareTypeFormat),
             Schema: schema,
+            IsSchemaExplicit: schemaExplicit,
             TableName: tableName!,
             Properties: properties,
             KeyProperty: properties.FirstOrDefault(static p => p.IsKey));
@@ -660,7 +694,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         return null;
     }
 
-    private static string RenderRepository(RepositoryModel model)
+    private static string RenderRepository(RepositoryModel model, DatabaseDialect dialect)
     {
         var sb = new StringBuilder();
         sb.AppendLine("// <auto-generated />");
@@ -718,7 +752,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
         foreach (var method in model.Methods)
         {
-            sb.Append(RenderMethod(method));
+            sb.Append(RenderMethod(method, dialect));
             sb.AppendLine();
         }
 
@@ -727,7 +761,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         return sb.ToString();
     }
 
-    private static string RenderMethod(RepositoryMethodModel method)
+    private static string RenderMethod(RepositoryMethodModel method, DatabaseDialect dialect)
     {
         var sb = new StringBuilder();
         var parameterList = string.Join(", ", method.Parameters.Select(static p => $"{p.TypeName} {p.Name}"));
@@ -738,28 +772,28 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         switch (method.OperationKind)
         {
             case RepositoryOperationKind.Insert:
-                RenderInsert(method, sb);
+                RenderInsert(method, sb, dialect);
                 break;
             case RepositoryOperationKind.Update:
-                RenderUpdate(method, sb);
+                RenderUpdate(method, sb, dialect);
                 break;
             case RepositoryOperationKind.Delete:
-                RenderDelete(method, sb);
+                RenderDelete(method, sb, dialect);
                 break;
             case RepositoryOperationKind.GetById:
-                RenderGetById(method, sb);
+                RenderGetById(method, sb, dialect);
                 break;
             case RepositoryOperationKind.GetAll:
-                RenderGetAll(method, sb);
+                RenderGetAll(method, sb, dialect);
                 break;
             case RepositoryOperationKind.GetPage:
-                RenderGetPage(method, sb);
+                RenderGetPage(method, sb, dialect);
                 break;
             case RepositoryOperationKind.Query:
-                RenderQuery(method, sb);
+                RenderQuery(method, sb, dialect);
                 break;
             case RepositoryOperationKind.StoredProcedure:
-                RenderStoredProcedure(method, sb);
+                RenderStoredProcedure(method, sb, dialect);
                 break;
             default:
                 sb.AppendLine("        throw new NotSupportedException(\"Unsupported generated method.\");");
@@ -957,7 +991,60 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         return sb.ToString();
     }
 
-    private static void RenderInsert(RepositoryMethodModel method, StringBuilder sb)
+    private static string RenderServiceRegistration(
+        IEnumerable<RepositoryModel> repositories,
+        IEnumerable<UnitOfWorkModel> unitOfWorks)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("// <auto-generated />");
+        sb.AppendLine("#nullable enable");
+        sb.AppendLine("using System;");
+        sb.AppendLine("using Microsoft.Extensions.DependencyInjection;");
+        sb.AppendLine();
+        sb.AppendLine("namespace DreamBig.SourceGen.Dapper;");
+        sb.AppendLine();
+        sb.AppendLine("/// <summary>");
+        sb.AppendLine("/// Dependency injection helpers for generated repositories.");
+        sb.AppendLine("/// </summary>");
+        sb.AppendLine("public static class DreamBigDapperGeneratedServiceCollectionExtensions");
+        sb.AppendLine("{");
+        sb.AppendLine("    /// <summary>");
+        sb.AppendLine("    /// Registers generated repositories and unit of work types.");
+        sb.AppendLine("    /// </summary>");
+        sb.AppendLine("    /// <param name=\"services\">Service collection.</param>");
+        sb.AppendLine("    /// <returns>Service collection.</returns>");
+        sb.AppendLine("    public static IServiceCollection AddDreamBigDapperGenerated(this IServiceCollection services)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        if (services is null)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            throw new ArgumentNullException(nameof(services));");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+
+        foreach (var repository in repositories.OrderBy(static r => r.InterfaceQualifiedName, StringComparer.Ordinal))
+        {
+            var implementation = GetQualifiedImplementationName(repository.Namespace, repository.ImplementationName);
+            sb.AppendLine($"        services.AddScoped<{repository.InterfaceQualifiedName}, {implementation}>();");
+        }
+
+        foreach (var unitOfWork in unitOfWorks.OrderBy(static u => u.InterfaceQualifiedName, StringComparer.Ordinal))
+        {
+            var implementation = GetQualifiedImplementationName(unitOfWork.Namespace, unitOfWork.ImplementationName);
+            sb.AppendLine($"        services.AddScoped<{unitOfWork.InterfaceQualifiedName}, {implementation}>();");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("        return services;");
+        sb.AppendLine("    }");
+        sb.AppendLine("}");
+
+        return sb.ToString();
+    }
+
+    private static string GetQualifiedImplementationName(string? ns, string name)
+        => string.IsNullOrWhiteSpace(ns) ? $"global::{name}" : $"global::{ns}.{name}";
+
+    private static void RenderInsert(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect)
     {
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
         if (method.Entity is null || operationParameters.Count != 1)
@@ -970,9 +1057,9 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine($"        EnsureTransactionRequired(\"{method.Name}\");");
         sb.AppendLine("        var transaction = ResolveTransaction();");
         var writeColumns = method.Entity.Properties.Where(static p => !p.IsKey).ToList();
-        var columnsSql = string.Join(", ", writeColumns.Select(p => Quote(p.ColumnName)));
+        var columnsSql = string.Join(", ", writeColumns.Select(p => Quote(dialect, p.ColumnName)));
         var valuesSql = string.Join(", ", writeColumns.Select(p => "@" + p.PropertyName));
-        var sql = $"INSERT INTO {QualifiedTable(method.Entity)} ({columnsSql}) VALUES ({valuesSql});";
+        var sql = $"INSERT INTO {QualifiedTable(dialect, method.Entity)} ({columnsSql}) VALUES ({valuesSql});";
         var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", {entityParameter}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
 
         if (method.IsTaskWithoutResult)
@@ -985,7 +1072,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine($"        return {executeExpression};");
     }
 
-    private static void RenderUpdate(RepositoryMethodModel method, StringBuilder sb)
+    private static void RenderUpdate(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect)
     {
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
         if (method.Entity is null || method.Entity.KeyProperty is null || operationParameters.Count != 1)
@@ -998,8 +1085,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine($"        EnsureTransactionRequired(\"{method.Name}\");");
         sb.AppendLine("        var transaction = ResolveTransaction();");
         var writeColumns = method.Entity.Properties.Where(static p => !p.IsKey).ToList();
-        var setSql = string.Join(", ", writeColumns.Select(p => $"{Quote(p.ColumnName)} = @{p.PropertyName}"));
-        var sql = $"UPDATE {QualifiedTable(method.Entity)} SET {setSql} WHERE {Quote(method.Entity.KeyProperty.ColumnName)} = @{method.Entity.KeyProperty.PropertyName};";
+        var setSql = string.Join(", ", writeColumns.Select(p => $"{Quote(dialect, p.ColumnName)} = @{p.PropertyName}"));
+        var sql = $"UPDATE {QualifiedTable(dialect, method.Entity)} SET {setSql} WHERE {Quote(dialect, method.Entity.KeyProperty.ColumnName)} = @{method.Entity.KeyProperty.PropertyName};";
         var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", {entityParameter}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
 
         if (method.IsTaskWithoutResult)
@@ -1012,7 +1099,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine($"        return {executeExpression};");
     }
 
-    private static void RenderDelete(RepositoryMethodModel method, StringBuilder sb)
+    private static void RenderDelete(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect)
     {
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
         if (operationParameters.Count == 0)
@@ -1021,12 +1108,12 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return;
         }
 
-        var table = method.Entity is null ? "[dbo].[Unknown]" : QualifiedTable(method.Entity);
+        var table = method.Entity is null ? QualifiedTable(dialect, "Unknown") : QualifiedTable(dialect, method.Entity);
         var keyColumn = method.Entity?.KeyProperty?.ColumnName ?? operationParameters[0].Name;
         var paramName = operationParameters[0].Name;
         sb.AppendLine($"        EnsureTransactionRequired(\"{method.Name}\");");
         sb.AppendLine("        var transaction = ResolveTransaction();");
-        var sql = $"DELETE FROM {table} WHERE {Quote(keyColumn)} = @{paramName};";
+        var sql = $"DELETE FROM {table} WHERE {Quote(dialect, keyColumn)} = @{paramName};";
         var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", new {{ {paramName} }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
 
         if (method.IsTaskWithoutResult)
@@ -1039,7 +1126,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine($"        return {executeExpression};");
     }
 
-    private static void RenderGetById(RepositoryMethodModel method, StringBuilder sb)
+    private static void RenderGetById(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect)
     {
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
         if (method.Entity is null || method.Entity.KeyProperty is null || operationParameters.Count == 0)
@@ -1050,14 +1137,14 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
         var keyParameter = operationParameters[0].Name;
         sb.AppendLine("        var transaction = ResolveTransaction();");
-        var selectSql = BuildEntitySelect(method.Entity);
-        var sql = $"{selectSql} WHERE {Quote(method.Entity.KeyProperty.ColumnName)} = @{keyParameter};";
+        var selectSql = BuildEntitySelect(method.Entity, dialect);
+        var sql = $"{selectSql} WHERE {Quote(dialect, method.Entity.KeyProperty.ColumnName)} = @{keyParameter};";
 
         sb.AppendLine($"        var rows = await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ {keyParameter} }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
         sb.AppendLine("        return rows.FirstOrDefault();");
     }
 
-    private static void RenderGetAll(RepositoryMethodModel method, StringBuilder sb)
+    private static void RenderGetAll(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect)
     {
         if (method.Entity is null)
         {
@@ -1065,13 +1152,13 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return;
         }
 
-        var sql = BuildEntitySelect(method.Entity) + ";";
+        var sql = BuildEntitySelect(method.Entity, dialect) + ";";
 
         sb.AppendLine("        var transaction = ResolveTransaction();");
         sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", transaction: transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
     }
 
-    private static void RenderGetPage(RepositoryMethodModel method, StringBuilder sb)
+    private static void RenderGetPage(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect)
     {
         if (method.Entity is null)
         {
@@ -1080,13 +1167,14 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         }
 
         var orderBy = method.Entity.KeyProperty?.ColumnName ?? method.Entity.Properties.FirstOrDefault()?.ColumnName ?? "Id";
-        var sql = $"{BuildEntitySelect(method.Entity)} ORDER BY {Quote(orderBy)} OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY;";
+        var orderBySql = $"{BuildEntitySelect(method.Entity, dialect)} ORDER BY {Quote(dialect, orderBy)}";
+        var sql = dialect switch\n+        {\n+            DatabaseDialect.PostgreSql => $\"{orderBySql} LIMIT @take OFFSET @skip;\",\n+            _ => $\"{orderBySql} OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY;\",\n+        };
 
         sb.AppendLine("        var transaction = ResolveTransaction();");
         sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ skip, take }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
     }
 
-    private static void RenderQuery(RepositoryMethodModel method, StringBuilder sb)
+    private static void RenderQuery(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect)
     {
         var entity = method.Entity;
         var from = method.QueryMetadata.From;
@@ -1094,25 +1182,25 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
         if (string.IsNullOrWhiteSpace(from))
         {
-            from = entity is null ? "[dbo].[Unknown]" : QualifiedTable(entity);
+            from = entity is null ? QualifiedTable(dialect, "Unknown") : QualifiedTable(dialect, entity);
         }
         else if (!IsQualifiedTableExpression(from!))
         {
-            from = QualifiedTable(method.QueryMetadata.Schema, from!);
+            from = QualifiedTable(dialect, method.QueryMetadata.Schema, method.QueryMetadata.IsSchemaExplicit, from!);
         }
 
         var selectColumns = entity is null
             ? "*"
-            : string.Join(", ", entity.Properties.Select(p => $"{baseAlias}.{Quote(p.ColumnName)} AS [{p.PropertyName}]"));
+            : string.Join(", ", entity.Properties.Select(p => $"{baseAlias}.{Quote(dialect, p.ColumnName)} AS {Quote(dialect, p.PropertyName)}"));
 
         var joinSql = string.IsNullOrWhiteSpace(method.QueryMetadata.Join)
-            ? BuildJoinClauses(method.QueryMetadata.Joins, baseAlias)
+            ? BuildJoinClauses(method.QueryMetadata.Joins, baseAlias, dialect)
             : " " + method.QueryMetadata.Join;
 
         var whereSql = string.IsNullOrWhiteSpace(method.QueryMetadata.Where) ? string.Empty : $" WHERE {method.QueryMetadata.Where}";
         var orderBySql = method.QueryMetadata.OrderByColumn is null
             ? string.Empty
-            : $" ORDER BY {baseAlias}.{Quote(method.QueryMetadata.OrderByColumn)} {ToSql(method.QueryMetadata.OrderByDirection)}";
+            : $" ORDER BY {baseAlias}.{Quote(dialect, method.QueryMetadata.OrderByColumn)} {ToSql(method.QueryMetadata.OrderByDirection)}";
         var sql = $"SELECT {selectColumns} FROM {from} {baseAlias}{joinSql}{whereSql}{orderBySql};";
 
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
@@ -1124,10 +1212,10 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", {anonymousParam}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
     }
 
-    private static void RenderStoredProcedure(RepositoryMethodModel method, StringBuilder sb)
+    private static void RenderStoredProcedure(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect)
     {
-        var spAttribute = method.QueryMetadata.StoredProcedure;
-        var procedureName = spAttribute ?? "[dbo].[UnknownProcedure]";
+        var storedProcedure = method.QueryMetadata.StoredProcedure;
+        var procedureName = ResolveStoredProcedureName(dialect, storedProcedure);
 
         sb.AppendLine($"        EnsureTransactionRequired(\"{method.Name}\");");
         sb.AppendLine("        var transaction = ResolveTransaction();");
@@ -1179,13 +1267,13 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine("        return result.Rows.FirstOrDefault();");
     }
 
-    private static string BuildEntitySelect(EntityModel entity)
+    private static string BuildEntitySelect(EntityModel entity, DatabaseDialect dialect)
     {
-        var selectColumns = string.Join(", ", entity.Properties.Select(p => $"{Quote(p.ColumnName)} AS [{p.PropertyName}]"));
-        return $"SELECT {selectColumns} FROM {QualifiedTable(entity)}";
+        var selectColumns = string.Join(", ", entity.Properties.Select(p => $"{Quote(dialect, p.ColumnName)} AS {Quote(dialect, p.PropertyName)}"));
+        return $"SELECT {selectColumns} FROM {QualifiedTable(dialect, entity)}";
     }
 
-    private static string BuildJoinClauses(IReadOnlyList<QueryJoinModel> joins, string baseAlias)
+    private static string BuildJoinClauses(IReadOnlyList<QueryJoinModel> joins, string baseAlias, DatabaseDialect dialect)
     {
         if (joins.Count == 0)
         {
@@ -1202,46 +1290,82 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 _ => "INNER JOIN",
             };
 
-            var onClause = $"{baseAlias}.{Quote(join.LeftColumn)} = {join.Alias}.{Quote(join.RightColumn)}";
+            var onClause = $"{baseAlias}.{Quote(dialect, join.LeftColumn)} = {join.Alias}.{Quote(dialect, join.RightColumn)}";
             if (!string.IsNullOrWhiteSpace(join.Where))
             {
                 onClause += $" AND ({join.Where})";
             }
 
-            return $" {keyword} {join.Table} {join.Alias} ON {onClause}";
+            var table = QualifiedTable(dialect, join.TableSchema, join.IsSchemaExplicit, join.TableName);
+            return $" {keyword} {table} {join.Alias} ON {onClause}";
         });
 
         return string.Concat(clauses);
     }
 
-    private static string QualifiedTable(EntityModel entity)
-        => $"{Quote(entity.Schema)}.{Quote(entity.TableName)}";
+    private static string QualifiedTable(DatabaseDialect dialect, EntityModel entity)
+        => QualifiedTable(dialect, entity.Schema, entity.IsSchemaExplicit, entity.TableName);
 
-    private static string QualifiedTable(string schema, string table)
-        => $"{Quote(schema)}.{Quote(table)}";
+    private static string QualifiedTable(DatabaseDialect dialect, string table)
+        => QualifiedTable(dialect, schema: null, isSchemaExplicit: false, table);
+
+    private static string QualifiedTable(DatabaseDialect dialect, string? schema, bool isSchemaExplicit, string table)
+    {
+        var resolvedSchema = isSchemaExplicit ? schema : ResolveDefaultSchema(dialect, schema);
+        if (string.IsNullOrWhiteSpace(resolvedSchema))
+        {
+            return Quote(dialect, table);
+        }
+
+        return $"{Quote(dialect, resolvedSchema)}.{Quote(dialect, table)}";
+    }
 
     private static bool IsQualifiedTableExpression(string value)
         => value.IndexOf("[", StringComparison.Ordinal) >= 0
             || value.IndexOf("]", StringComparison.Ordinal) >= 0
+            || value.IndexOf("\"", StringComparison.Ordinal) >= 0
+            || value.IndexOf("`", StringComparison.Ordinal) >= 0
             || value.IndexOf(".", StringComparison.Ordinal) >= 0;
 
-    private static string ResolveJoinTable(EntityModel? joinEntity, string joinSchema)
+    private static string Quote(DatabaseDialect dialect, string identifier)
+        => dialect switch
+        {
+            DatabaseDialect.PostgreSql => $"\"{identifier.Replace("\"", "\"\"")}\"",
+            _ => $"[{identifier.Replace("]", "]]")}]",
+        };
+
+    private static string ResolveDefaultSchema(DatabaseDialect dialect, string? schema)
     {
-        if (joinEntity is null)
+        if (!string.IsNullOrWhiteSpace(schema))
         {
-            return "[dbo].[Unknown]";
+            return schema!;
         }
 
-        if (!string.Equals(joinSchema, "dbo", StringComparison.OrdinalIgnoreCase))
+        return dialect switch
         {
-            return QualifiedTable(joinSchema, joinEntity.TableName);
-        }
-
-        return QualifiedTable(joinEntity);
+            DatabaseDialect.PostgreSql => "public",
+            _ => "dbo",
+        };
     }
 
-    private static string Quote(string identifier)
-        => $"[{identifier.Replace("]", "]]")}]";
+    private static string ResolveStoredProcedureName(DatabaseDialect dialect, StoredProcedureMetadata? storedProcedure)
+    {
+        var name = storedProcedure?.Name;
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            name = "UnknownProcedure";
+        }
+
+        var schema = storedProcedure?.Schema;
+        var isSchemaExplicit = storedProcedure?.IsSchemaExplicit ?? false;
+        var resolvedSchema = isSchemaExplicit ? schema : ResolveDefaultSchema(dialect, schema);
+        if (string.IsNullOrWhiteSpace(resolvedSchema))
+        {
+            return Quote(dialect, name);
+        }
+
+        return $"{Quote(dialect, resolvedSchema)}.{Quote(dialect, name)}";
+    }
 
     private static string EscapeSql(string sql)
         => sql.Replace("\\", "\\\\").Replace("\"", "\\\"");
@@ -1267,20 +1391,27 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
     private static string? ReadNamedAttributeString(AttributeData? attributeData, string argumentName)
     {
+        return TryReadNamedAttributeString(attributeData, argumentName, out var value) ? value : null;
+    }
+
+    private static bool TryReadNamedAttributeString(AttributeData? attributeData, string argumentName, out string? value)
+    {
+        value = null;
         if (attributeData is null)
         {
-            return null;
+            return false;
         }
 
         foreach (var argument in attributeData.NamedArguments)
         {
             if (argument.Key == argumentName)
             {
-                return argument.Value.Value as string;
+                value = argument.Value.Value as string;
+                return true;
             }
         }
 
-        return null;
+        return false;
     }
 
     private static int? ReadNamedAttributeInt(AttributeData? attributeData, string argumentName)
@@ -1414,6 +1545,21 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         return new DbParamAttributeModel(direction, dbType, size);
     }
 
+    private static DatabaseDialect ResolveDialect(AnalyzerConfigOptionsProvider optionsProvider)
+    {
+        if (optionsProvider.GlobalOptions.TryGetValue(DialectPropertyName, out var value))
+        {
+            if (string.Equals(value, "PostgreSql", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "PostgreSQL", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "Postgres", StringComparison.OrdinalIgnoreCase))
+            {
+                return DatabaseDialect.PostgreSql;
+            }
+        }
+
+        return DatabaseDialect.SqlServer;
+    }
+
     private sealed record RepositoryModel(
         string? Namespace,
         string InterfaceName,
@@ -1455,7 +1601,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
     private sealed record EntityModel(
         string ClrTypeName,
-        string Schema,
+        string? Schema,
+        bool IsSchemaExplicit,
         string TableName,
         IReadOnlyList<EntityPropertyModel> Properties,
         EntityPropertyModel? KeyProperty);
@@ -1468,23 +1615,31 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
     private sealed record QueryMetadata(
         string? From,
-        string Schema,
+        string? Schema,
+        bool IsSchemaExplicit,
         string? Where,
         string? OrderByColumn,
         OrderByDirectionModel OrderByDirection,
         string? Join,
         IReadOnlyList<QueryJoinModel> Joins)
     {
-        public string? StoredProcedure { get; init; }
+        public StoredProcedureMetadata? StoredProcedure { get; init; }
     }
 
     private sealed record QueryJoinModel(
         string JoinType,
-        string Table,
+        string TableName,
+        string? TableSchema,
+        bool IsSchemaExplicit,
         string Alias,
         string LeftColumn,
         string RightColumn,
         string? Where);
+
+    private sealed record StoredProcedureMetadata(
+        string Name,
+        string? Schema,
+        bool IsSchemaExplicit);
 
     private sealed record DbParamAttributeModel(DbParamDirectionModel Direction, System.Data.DbType? DbType, int? Size);
 
@@ -1512,6 +1667,12 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         GetPage,
         Query,
         StoredProcedure,
+    }
+
+    private enum DatabaseDialect
+    {
+        SqlServer,
+        PostgreSql,
     }
 
     private sealed record MethodShape(

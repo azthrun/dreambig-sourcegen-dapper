@@ -23,7 +23,7 @@ public sealed class DbStoredProcedureAttribute : Attribute
     public string Name { get; }
 
     /// <summary>
-    /// Gets or sets procedure schema. Defaults to <c>dbo</c>.
+    /// Gets or sets procedure schema.
     /// </summary>
-    public string Schema { get; set; } = "dbo";
+    public string? Schema { get; set; }
 }

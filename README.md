@@ -9,7 +9,7 @@
 - Generated CRUD methods
 - Generated stored procedure execution with output parameter support
 - Generated INNER/OUTER joins from method-level attributes
-- SQL Server-first generation model
+- Provider-specific SQL generation (SQL Server and PostgreSQL)
 
 ## Target Frameworks
 
@@ -20,6 +20,38 @@ Runtime library supports:
 - `net7.0`
 - `net8.0`
 - `net10.0`
+
+## Install
+
+- SQL Server: `DreamBig.SourceGen.Dapper`
+- PostgreSQL: `DreamBig.SourceGen.Dapper.PostgreSql`
+
+## DI Setup
+
+SQL Server:
+
+```csharp
+using DreamBig.SourceGen.Dapper.SqlServer;
+
+services.AddDreamBigDapperSqlServer(configuration);
+services.AddDreamBigDapperGenerated();
+```
+
+PostgreSQL:
+
+```csharp
+using DreamBig.SourceGen.Dapper.PostgreSql;
+
+services.AddDreamBigDapperPostgreSql(configuration);
+services.AddDreamBigDapperGenerated();
+```
+
+Configuration sections:
+
+- SQL Server: `DreamBig:Dapper:SqlServer`
+- PostgreSQL: `DreamBig:Dapper:PostgreSql`
+
+Overloads are available for raw connection strings and custom connection string factories.
 
 ## Quick Start
 
@@ -156,10 +188,10 @@ Notes:
 
 ## Known Limitations (v1)
 
-- SQL dialect support is SQL Server-first.
+- SQL dialect support is limited to SQL Server and PostgreSQL.
 - Stored procedures support one mapped result set plus output parameter capture.
 - Complex projection/multi-mapping scenarios are not yet generated.
 
-## Future Dialect Migration Plan
+## Dialect Packages
 
-The generator architecture is designed to evolve into provider-specific SQL emitters (`SqlServer`, `PostgreSql`, `MySql`) while preserving the same attribute contracts.
+The generator emits SQL based on the provider-specific package you install (`DreamBig.SourceGen.Dapper` for SQL Server, `DreamBig.SourceGen.Dapper.PostgreSql` for PostgreSQL) while preserving the same attribute contracts.

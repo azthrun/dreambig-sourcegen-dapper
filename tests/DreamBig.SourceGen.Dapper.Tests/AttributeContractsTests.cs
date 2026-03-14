@@ -21,7 +21,7 @@ public sealed class AttributeContractsTests
         var attribute = new DbTableAttribute("Customers");
 
         attribute.TableName.ShouldBe("Customers");
-        attribute.Schema.ShouldBe("dbo");
+        attribute.Schema.ShouldBeNull();
         attribute.PrimaryKey.ShouldBeNull();
     }
 
@@ -66,7 +66,7 @@ public sealed class AttributeContractsTests
         var attribute = new DbStoredProcedureAttribute("usp_customer_summary");
 
         attribute.Name.ShouldBe("usp_customer_summary");
-        attribute.Schema.ShouldBe("dbo");
+        attribute.Schema.ShouldBeNull();
     }
 
     [Theory]

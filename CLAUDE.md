@@ -26,7 +26,8 @@ This is a **C# source generator** library that generates Dapper repository imple
 
 - **DreamBig.SourceGen.Dapper.Generator** (`netstandard2.0`) - The Roslyn source generator that emits repository code
 - **DreamBig.SourceGen.Dapper.Abstractions** (`net8.0`) - Runtime attributes and extension methods consumed by generated code
-- **DreamBig.SourceGen.Dapper.Package** - Packaging project for NuGet distribution
+- **DreamBig.SourceGen.Dapper.SqlServer.Package** - Packaging project for SQL Server NuGet distribution
+- **DreamBig.SourceGen.Dapper.PostgreSql.Package** - Packaging project for PostgreSQL NuGet distribution
 
 ### Test Projects
 

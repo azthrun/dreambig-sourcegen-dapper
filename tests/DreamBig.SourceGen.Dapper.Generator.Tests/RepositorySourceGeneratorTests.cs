@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Reflection;
 using DreamBig.SourceGen.Dapper.Generator.Generation;
@@ -57,6 +58,44 @@ public interface ICustomerRepository
         generated.ShouldContain("SELECT [Id] AS [Id], [full_name] AS [Name], [Email] AS [Email] FROM [dbo].[Customers]");
         generated.ShouldContain("public async global::System.Threading.Tasks.Task<int> InsertCustomer");
         generated.ShouldContain("public async global::System.Threading.Tasks.Task<global::Demo.Customer?> GetByIdCustomer");
+    }
+
+    [Fact]
+    public void ShouldGeneratePostgreSqlPagingAndSchemaDefaults()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<IEnumerable<Customer>> GetPageCustomers(int skip, int take, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source, "PostgreSql");
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("FROM \"public\".\"Customers\"");
+        generated.ShouldContain("LIMIT @take OFFSET @skip");
     }
 
     [Fact]
@@ -519,7 +558,7 @@ public interface IAppUnitOfWork
         result.Diagnostics.Any(d => d.Id == "DBSGD012").ShouldBeTrue();
     }
 
-    private static GeneratorResult RunGenerator(string source)
+    private static GeneratorResult RunGenerator(string source, string? dialect = null)
     {
         var syntaxTree = CSharpSyntaxTree.ParseText(source);
 
@@ -543,7 +582,8 @@ public interface IAppUnitOfWork
             options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
         var generator = new RepositorySourceGenerator();
-        GeneratorDriver driver = CSharpGeneratorDriver.Create(generator);
+        var optionsProvider = new TestAnalyzerConfigOptionsProvider(dialect);
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(generator, optionsProvider: optionsProvider);
         driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out _, out _);
 
         var runResult = driver.GetRunResult();
@@ -564,5 +604,40 @@ public interface IAppUnitOfWork
         public ImmutableArray<Diagnostic> Diagnostics { get; }
 
         public ImmutableArray<SyntaxTree> GeneratedTrees { get; }
+    }
+
+    private sealed class TestAnalyzerConfigOptionsProvider : AnalyzerConfigOptionsProvider
+    {
+        private readonly AnalyzerConfigOptions _globalOptions;
+
+        public TestAnalyzerConfigOptionsProvider(string? dialect)
+        {
+            var options = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (!string.IsNullOrWhiteSpace(dialect))
+            {
+                options["build_property.DreamBigDapperDialect"] = dialect!;
+            }
+
+            _globalOptions = new TestAnalyzerConfigOptions(options);
+        }
+
+        public override AnalyzerConfigOptions GlobalOptions => _globalOptions;
+
+        public override AnalyzerConfigOptions GetOptions(SyntaxTree tree) => _globalOptions;
+
+        public override AnalyzerConfigOptions GetOptions(AdditionalText textFile) => _globalOptions;
+    }
+
+    private sealed class TestAnalyzerConfigOptions : AnalyzerConfigOptions
+    {
+        private readonly IReadOnlyDictionary<string, string> _options;
+
+        public TestAnalyzerConfigOptions(IReadOnlyDictionary<string, string> options)
+        {
+            _options = options;
+        }
+
+        public override bool TryGetValue(string key, out string value)
+            => _options.TryGetValue(key, out value);
     }
 }
