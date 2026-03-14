@@ -4,6 +4,7 @@ using System.Reflection;
 using DreamBig.SourceGen.Dapper.Generator.Generation;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Diagnostics;
 using Shouldly;
 using Xunit;
 
