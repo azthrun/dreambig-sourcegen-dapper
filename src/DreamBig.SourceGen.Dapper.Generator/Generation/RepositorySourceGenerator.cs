@@ -1322,7 +1322,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return Quote(dialect, table);
         }
 
-        return $"{Quote(dialect, resolvedSchema)}.{Quote(dialect, table)}";
+        return $"{Quote(dialect, resolvedSchema!)}.{Quote(dialect, table)}";
     }
 
     private static bool IsQualifiedTableExpression(string value)
@@ -1366,10 +1366,10 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var resolvedSchema = isSchemaExplicit ? schema : ResolveDefaultSchema(dialect, schema);
         if (string.IsNullOrWhiteSpace(resolvedSchema))
         {
-            return Quote(dialect, name);
+            return Quote(dialect, name!);
         }
 
-        return $"{Quote(dialect, resolvedSchema)}.{Quote(dialect, name)}";
+        return $"{Quote(dialect, resolvedSchema!)}.{Quote(dialect, name!)}";
     }
 
     private static string EscapeSql(string sql)
