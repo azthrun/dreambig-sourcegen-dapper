@@ -53,7 +53,7 @@
     <None Include="..\DreamBig.SourceGen.Dapper.PostgreSql\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.PostgreSql.dll" Pack="true" PackagePath="lib/net10.0/" Visible="false" />
     <None Include="..\DreamBig.SourceGen.Dapper.PostgreSql\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.PostgreSql.xml" Pack="true" PackagePath="lib/net10.0/" Visible="false" />
 
-    <None Include="..\DreamBig.SourceGen.Dapper.Generator\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.Generator.dll" Pack="true" PackagePath="analyzers/dotnet/cs/" Visible="false" />
+    <None Include="..\DreamBig.SourceGen.Dapper.Generator\bin\$(Configuration)\netstandard2.0\DreamBig.SourceGen.Dapper.Generator.dll" Pack="true" PackagePath="analyzers/dotnet/cs/" Visible="false" />
   </ItemGroup>
 
   <Target Name="BuildPackageDependencies" BeforeTargets="Pack" Condition="'$(NoBuild)' != 'true'">

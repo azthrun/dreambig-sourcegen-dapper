@@ -52,7 +52,7 @@
     <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.Abstractions.xml" Pack="true" PackagePath="lib/net10.0/" Visible="false" />
     <None Include="..\DreamBig.SourceGen.Dapper.SqlServer\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.SqlServer.dll" Pack="true" PackagePath="lib/net10.0/" Visible="false" />
     <None Include="..\DreamBig.SourceGen.Dapper.SqlServer\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.SqlServer.xml" Pack="true" PackagePath="lib/net10.0/" Visible="false" />
-    <None Include="..\DreamBig.SourceGen.Dapper.Generator\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.Generator.dll" Pack="true" PackagePath="analyzers/dotnet/cs/" Visible="false" />
+    <None Include="..\DreamBig.SourceGen.Dapper.Generator\bin\$(Configuration)\netstandard2.0\DreamBig.SourceGen.Dapper.Generator.dll" Pack="true" PackagePath="analyzers/dotnet/cs/" Visible="false" />
   </ItemGroup>
 
   <Target Name="BuildPackageDependencies" BeforeTargets="Pack" Condition="'$(NoBuild)' != 'true'">
