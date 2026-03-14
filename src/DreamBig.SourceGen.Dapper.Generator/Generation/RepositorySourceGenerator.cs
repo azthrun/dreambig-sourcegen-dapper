@@ -1168,7 +1168,11 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
         var orderBy = method.Entity.KeyProperty?.ColumnName ?? method.Entity.Properties.FirstOrDefault()?.ColumnName ?? "Id";
         var orderBySql = $"{BuildEntitySelect(method.Entity, dialect)} ORDER BY {Quote(dialect, orderBy)}";
-        var sql = dialect switch\n+        {\n+            DatabaseDialect.PostgreSql => $\"{orderBySql} LIMIT @take OFFSET @skip;\",\n+            _ => $\"{orderBySql} OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY;\",\n+        };
+        var sql = dialect switch
+        {
+            DatabaseDialect.PostgreSql => $"{orderBySql} LIMIT @take OFFSET @skip;",
+            _ => $"{orderBySql} OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY;",
+        };
 
         sb.AppendLine("        var transaction = ResolveTransaction();");
         sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ skip, take }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
