@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-    <TargetFramework>netstandard2.0</TargetFramework>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
     <AssemblyName>DreamBig.SourceGen.Dapper.Generator</AssemblyName>
     <RootNamespace>DreamBig.SourceGen.Dapper.Generator</RootNamespace>
     <IsRoslynComponent>true</IsRoslynComponent>

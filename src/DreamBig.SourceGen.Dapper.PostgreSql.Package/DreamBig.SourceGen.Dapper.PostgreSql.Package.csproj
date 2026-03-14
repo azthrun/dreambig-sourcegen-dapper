@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFrameworks>net5.0;net6.0;net7.0;net8.0;net10.0</TargetFrameworks>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
     <AssemblyName>DreamBig.SourceGen.Dapper.PostgreSql.Package</AssemblyName>
     <NoWarn>$(NoWarn);CS1591;NU5128</NoWarn>
     <IncludeBuildOutput>false</IncludeBuildOutput>
@@ -46,29 +46,21 @@
     <None Include="..\..\LICENSE" Pack="true" PackagePath="/" Visible="false" />
     <None Include="buildTransitive\DreamBig.SourceGen.Dapper.PostgreSql.props" Pack="true" PackagePath="buildTransitive/" Visible="false" />
 
-    <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net5.0\DreamBig.SourceGen.Dapper.Abstractions.dll" Pack="true" PackagePath="lib/net5.0/" Visible="false" />
-    <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net5.0\DreamBig.SourceGen.Dapper.Abstractions.xml" Pack="true" PackagePath="lib/net5.0/" Visible="false" />
-    <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net6.0\DreamBig.SourceGen.Dapper.Abstractions.dll" Pack="true" PackagePath="lib/net6.0/" Visible="false" />
-    <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net6.0\DreamBig.SourceGen.Dapper.Abstractions.xml" Pack="true" PackagePath="lib/net6.0/" Visible="false" />
-    <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net7.0\DreamBig.SourceGen.Dapper.Abstractions.dll" Pack="true" PackagePath="lib/net7.0/" Visible="false" />
-    <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net7.0\DreamBig.SourceGen.Dapper.Abstractions.xml" Pack="true" PackagePath="lib/net7.0/" Visible="false" />
     <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net8.0\DreamBig.SourceGen.Dapper.Abstractions.dll" Pack="true" PackagePath="lib/net8.0/" Visible="false" />
     <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net8.0\DreamBig.SourceGen.Dapper.Abstractions.xml" Pack="true" PackagePath="lib/net8.0/" Visible="false" />
+    <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net9.0\DreamBig.SourceGen.Dapper.Abstractions.dll" Pack="true" PackagePath="lib/net9.0/" Visible="false" />
+    <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net9.0\DreamBig.SourceGen.Dapper.Abstractions.xml" Pack="true" PackagePath="lib/net9.0/" Visible="false" />
     <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.Abstractions.dll" Pack="true" PackagePath="lib/net10.0/" Visible="false" />
     <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.Abstractions.xml" Pack="true" PackagePath="lib/net10.0/" Visible="false" />
 
-    <None Include="..\DreamBig.SourceGen.Dapper.PostgreSql\bin\$(Configuration)\net5.0\DreamBig.SourceGen.Dapper.PostgreSql.dll" Pack="true" PackagePath="lib/net5.0/" Visible="false" />
-    <None Include="..\DreamBig.SourceGen.Dapper.PostgreSql\bin\$(Configuration)\net5.0\DreamBig.SourceGen.Dapper.PostgreSql.xml" Pack="true" PackagePath="lib/net5.0/" Visible="false" />
-    <None Include="..\DreamBig.SourceGen.Dapper.PostgreSql\bin\$(Configuration)\net6.0\DreamBig.SourceGen.Dapper.PostgreSql.dll" Pack="true" PackagePath="lib/net6.0/" Visible="false" />
-    <None Include="..\DreamBig.SourceGen.Dapper.PostgreSql\bin\$(Configuration)\net6.0\DreamBig.SourceGen.Dapper.PostgreSql.xml" Pack="true" PackagePath="lib/net6.0/" Visible="false" />
-    <None Include="..\DreamBig.SourceGen.Dapper.PostgreSql\bin\$(Configuration)\net7.0\DreamBig.SourceGen.Dapper.PostgreSql.dll" Pack="true" PackagePath="lib/net7.0/" Visible="false" />
-    <None Include="..\DreamBig.SourceGen.Dapper.PostgreSql\bin\$(Configuration)\net7.0\DreamBig.SourceGen.Dapper.PostgreSql.xml" Pack="true" PackagePath="lib/net7.0/" Visible="false" />
     <None Include="..\DreamBig.SourceGen.Dapper.PostgreSql\bin\$(Configuration)\net8.0\DreamBig.SourceGen.Dapper.PostgreSql.dll" Pack="true" PackagePath="lib/net8.0/" Visible="false" />
     <None Include="..\DreamBig.SourceGen.Dapper.PostgreSql\bin\$(Configuration)\net8.0\DreamBig.SourceGen.Dapper.PostgreSql.xml" Pack="true" PackagePath="lib/net8.0/" Visible="false" />
+    <None Include="..\DreamBig.SourceGen.Dapper.PostgreSql\bin\$(Configuration)\net9.0\DreamBig.SourceGen.Dapper.PostgreSql.dll" Pack="true" PackagePath="lib/net9.0/" Visible="false" />
+    <None Include="..\DreamBig.SourceGen.Dapper.PostgreSql\bin\$(Configuration)\net9.0\DreamBig.SourceGen.Dapper.PostgreSql.xml" Pack="true" PackagePath="lib/net9.0/" Visible="false" />
     <None Include="..\DreamBig.SourceGen.Dapper.PostgreSql\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.PostgreSql.dll" Pack="true" PackagePath="lib/net10.0/" Visible="false" />
     <None Include="..\DreamBig.SourceGen.Dapper.PostgreSql\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.PostgreSql.xml" Pack="true" PackagePath="lib/net10.0/" Visible="false" />
 
-    <None Include="..\DreamBig.SourceGen.Dapper.Generator\bin\$(Configuration)\netstandard2.0\DreamBig.SourceGen.Dapper.Generator.dll" Pack="true" PackagePath="analyzers/dotnet/cs/" Visible="false" />
+    <None Include="..\DreamBig.SourceGen.Dapper.Generator\bin\$(Configuration)\net8.0\DreamBig.SourceGen.Dapper.Generator.dll" Pack="true" PackagePath="analyzers/dotnet/cs/" Visible="false" />
   </ItemGroup>
 
   <Target Name="BuildPackageDependencies" BeforeTargets="Pack" Condition="'$(NoBuild)' != 'true'">
