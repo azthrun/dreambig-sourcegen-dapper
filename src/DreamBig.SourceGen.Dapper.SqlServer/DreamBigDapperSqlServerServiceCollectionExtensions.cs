@@ -1,5 +1,7 @@
 using System;
 using System.Data;
+using System.Linq;
+using System.Reflection;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -95,6 +97,8 @@ public static class DreamBigDapperSqlServerServiceCollectionExtensions
         services.AddSingleton<Func<IDbConnection>>(static provider =>
             () => new SqlConnection(ResolveConnectionString(provider)));
 
+        TryAddGeneratedRepositories(services);
+
         return services;
     }
 
@@ -110,4 +114,37 @@ public static class DreamBigDapperSqlServerServiceCollectionExtensions
 
         return connectionString;
     }
+
+    private static void TryAddGeneratedRepositories(IServiceCollection services)
+    {
+        if (services.Any(static sd => sd.ServiceType.FullName == GeneratedMarkerTypeName))
+        {
+            return;
+        }
+
+        var extensionType = AppDomain.CurrentDomain
+            .GetAssemblies()
+            .Select(static assembly => assembly.GetType(GeneratedExtensionsTypeName, throwOnError: false))
+            .FirstOrDefault(static type => type is not null);
+
+        var method = extensionType?.GetMethod(
+            "AddDreamBigDapperGenerated",
+            BindingFlags.Public | BindingFlags.Static,
+            binder: null,
+            types: new[] { typeof(IServiceCollection) },
+            modifiers: null);
+
+        if (method is null)
+        {
+            return;
+        }
+
+        method.Invoke(null, new object?[] { services });
+    }
+
+    private const string GeneratedExtensionsTypeName =
+        "DreamBig.SourceGen.Dapper.DreamBigDapperGeneratedServiceCollectionExtensions";
+
+    private const string GeneratedMarkerTypeName =
+        "DreamBig.SourceGen.Dapper.Internal.DreamBigDapperGeneratedMarker";
 }
