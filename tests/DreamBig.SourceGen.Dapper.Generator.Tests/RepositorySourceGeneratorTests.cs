@@ -100,6 +100,46 @@ public interface ICustomerRepository
     }
 
     [Fact]
+    public void ShouldDisablePostgreSqlCaseSensitiveQuotingWhenConfigured()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository(CaseSensitive = false)]
+public interface ICustomerRepository
+{
+    Task<IEnumerable<Customer>> GetPageCustomers(int skip, int take, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source, "PostgreSql");
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("FROM public.Customers");
+        generated.ShouldContain("SELECT Id AS Id, Name AS Name");
+        generated.ShouldNotContain("\"public\"");
+        generated.ShouldNotContain("\"Id\"");
+    }
+
+    [Fact]
     public void ShouldGenerateJoinAndStoredProcedureMethods()
     {
         const string source = """
@@ -419,13 +459,13 @@ public interface IAppUnitOfWork
             Environment.NewLine,
             result.GeneratedTrees.Select(static t => t.GetText().ToString()));
 
-        generated.ShouldContain("public sealed partial class IAppUnitOfWorkGenerated");
+        generated.ShouldContain("public sealed partial class AppUnitOfWorkGenerated");
         generated.ShouldContain("BeginTransactionAsync");
         generated.ShouldContain("CommitAsync");
         generated.ShouldContain("RollbackAsync");
-        generated.ShouldContain("public global::Demo.ICustomerRepository Customers => _Customers ??= new ICustomerRepositoryGenerated");
-        generated.ShouldContain("public global::Demo.IOrderRepository Orders => _Orders ??= new IOrderRepositoryGenerated");
-        generated.ShouldContain("public ICustomerRepositoryGenerated(");
+        generated.ShouldContain("public global::Demo.ICustomerRepository Customers => _Customers ??= new CustomerRepositoryGenerated");
+        generated.ShouldContain("public global::Demo.IOrderRepository Orders => _Orders ??= new OrderRepositoryGenerated");
+        generated.ShouldContain("public CustomerRepositoryGenerated(");
         generated.ShouldContain("transactionContext)");
         generated.ShouldContain("EnsureTransactionRequired(\"InsertCustomer\")");
         generated.ShouldContain("EnsureTransactionRequired(\"DeleteOrder\")");

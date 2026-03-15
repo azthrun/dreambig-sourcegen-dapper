@@ -80,7 +80,7 @@ public interface ICustomerRepository
 }
 ```
 
-The source generator emits `ICustomerRepositoryGenerated`, with SQL and Dapper calls already implemented.
+The source generator emits `CustomerRepositoryGenerated`, with SQL and Dapper calls already implemented.
 
 ## Primary Key Without `[DbKey]`
 
@@ -161,8 +161,8 @@ public interface IAppUnitOfWork
     IOrderRepository Orders { get; }
 }
 
-// generated type: IAppUnitOfWorkGenerated
-var uow = new IAppUnitOfWorkGenerated(() => new SqlConnection(connectionString));
+// generated type: AppUnitOfWorkGenerated
+var uow = new AppUnitOfWorkGenerated(() => new SqlConnection(connectionString));
 
 await uow.BeginTransactionAsync(cancellationToken: cancellationToken);
 try

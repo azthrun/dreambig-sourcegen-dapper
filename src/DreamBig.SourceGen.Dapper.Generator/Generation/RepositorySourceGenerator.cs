@@ -147,12 +147,17 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             ? null
             : interfaceSymbol.ContainingNamespace.ToDisplayString();
 
+        var repositoryAttribute = interfaceSymbol.GetAttributes()
+            .FirstOrDefault(a => IsAttribute(a.AttributeClass, DbRepositoryAttribute));
+        var caseSensitive = ReadNamedAttributeBool(repositoryAttribute, "CaseSensitive") ?? true;
+
         return new RepositoryModel(
             Namespace: ns,
             InterfaceName: interfaceSymbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
             InterfaceQualifiedName: interfaceSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-            ImplementationName: interfaceSymbol.Name + "Generated",
-            Methods: methods);
+            ImplementationName: ResolveRepositoryImplementationName(interfaceSymbol.Name),
+            Methods: methods,
+            CaseSensitive: caseSensitive);
     }
 
     private static UnitOfWorkModel? BuildUnitOfWorkModel(
@@ -218,10 +223,12 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 continue;
             }
 
+            var implementationName = generatedRepositories[repoInterfaceName].ImplementationName;
+
             properties.Add(new UnitOfWorkRepositoryPropertyModel(
                 Name: property.Name,
                 TypeName: property.Type.ToDisplayString(NullableAwareTypeFormat),
-                RepositoryImplementationName: repositoryInterface.Name + "Generated"));
+                RepositoryImplementationName: implementationName));
         }
 
         var duplicate = properties
@@ -259,7 +266,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         return new UnitOfWorkModel(
             Namespace: ns,
             InterfaceQualifiedName: interfaceSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-            ImplementationName: interfaceSymbol.Name + "Generated",
+            ImplementationName: ResolveRepositoryImplementationName(interfaceSymbol.Name),
             RepositoryProperties: properties);
     }
 
@@ -753,7 +760,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
         foreach (var method in model.Methods)
         {
-            sb.Append(RenderMethod(method, dialect));
+            sb.Append(RenderMethod(method, dialect, model.CaseSensitive));
             sb.AppendLine();
         }
 
@@ -762,7 +769,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         return sb.ToString();
     }
 
-    private static string RenderMethod(RepositoryMethodModel method, DatabaseDialect dialect)
+    private static string RenderMethod(RepositoryMethodModel method, DatabaseDialect dialect, bool caseSensitive)
     {
         var sb = new StringBuilder();
         var parameterList = string.Join(", ", method.Parameters.Select(static p => $"{p.TypeName} {p.Name}"));
@@ -773,28 +780,28 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         switch (method.OperationKind)
         {
             case RepositoryOperationKind.Insert:
-                RenderInsert(method, sb, dialect);
+                RenderInsert(method, sb, dialect, caseSensitive);
                 break;
             case RepositoryOperationKind.Update:
-                RenderUpdate(method, sb, dialect);
+                RenderUpdate(method, sb, dialect, caseSensitive);
                 break;
             case RepositoryOperationKind.Delete:
-                RenderDelete(method, sb, dialect);
+                RenderDelete(method, sb, dialect, caseSensitive);
                 break;
             case RepositoryOperationKind.GetById:
-                RenderGetById(method, sb, dialect);
+                RenderGetById(method, sb, dialect, caseSensitive);
                 break;
             case RepositoryOperationKind.GetAll:
-                RenderGetAll(method, sb, dialect);
+                RenderGetAll(method, sb, dialect, caseSensitive);
                 break;
             case RepositoryOperationKind.GetPage:
-                RenderGetPage(method, sb, dialect);
+                RenderGetPage(method, sb, dialect, caseSensitive);
                 break;
             case RepositoryOperationKind.Query:
-                RenderQuery(method, sb, dialect);
+                RenderQuery(method, sb, dialect, caseSensitive);
                 break;
             case RepositoryOperationKind.StoredProcedure:
-                RenderStoredProcedure(method, sb, dialect);
+                RenderStoredProcedure(method, sb, dialect, caseSensitive);
                 break;
             default:
                 sb.AppendLine("        throw new NotSupportedException(\"Unsupported generated method.\");");
@@ -1051,7 +1058,19 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     private static string GetQualifiedImplementationName(string? ns, string name)
         => string.IsNullOrWhiteSpace(ns) ? $"global::{name}" : $"global::{ns}.{name}";
 
-    private static void RenderInsert(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect)
+    private static string ResolveRepositoryImplementationName(string interfaceName)
+    {
+        if (interfaceName.Length > 1
+            && interfaceName[0] == 'I'
+            && char.IsUpper(interfaceName[1]))
+        {
+            interfaceName = interfaceName.Substring(1);
+        }
+
+        return interfaceName + "Generated";
+    }
+
+    private static void RenderInsert(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect, bool caseSensitive)
     {
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
         if (method.Entity is null || operationParameters.Count != 1)
@@ -1064,9 +1083,9 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine($"        EnsureTransactionRequired(\"{method.Name}\");");
         sb.AppendLine("        var transaction = ResolveTransaction();");
         var writeColumns = method.Entity.Properties.Where(static p => !p.IsKey).ToList();
-        var columnsSql = string.Join(", ", writeColumns.Select(p => Quote(dialect, p.ColumnName)));
+        var columnsSql = string.Join(", ", writeColumns.Select(p => Quote(dialect, p.ColumnName, caseSensitive)));
         var valuesSql = string.Join(", ", writeColumns.Select(p => "@" + p.PropertyName));
-        var sql = $"INSERT INTO {QualifiedTable(dialect, method.Entity)} ({columnsSql}) VALUES ({valuesSql});";
+        var sql = $"INSERT INTO {QualifiedTable(dialect, method.Entity, caseSensitive)} ({columnsSql}) VALUES ({valuesSql});";
         var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", {entityParameter}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
 
         if (method.IsTaskWithoutResult)
@@ -1079,7 +1098,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine($"        return {executeExpression};");
     }
 
-    private static void RenderUpdate(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect)
+    private static void RenderUpdate(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect, bool caseSensitive)
     {
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
         if (method.Entity is null || method.Entity.KeyProperty is null || operationParameters.Count != 1)
@@ -1092,8 +1111,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine($"        EnsureTransactionRequired(\"{method.Name}\");");
         sb.AppendLine("        var transaction = ResolveTransaction();");
         var writeColumns = method.Entity.Properties.Where(static p => !p.IsKey).ToList();
-        var setSql = string.Join(", ", writeColumns.Select(p => $"{Quote(dialect, p.ColumnName)} = @{p.PropertyName}"));
-        var sql = $"UPDATE {QualifiedTable(dialect, method.Entity)} SET {setSql} WHERE {Quote(dialect, method.Entity.KeyProperty.ColumnName)} = @{method.Entity.KeyProperty.PropertyName};";
+        var setSql = string.Join(", ", writeColumns.Select(p => $"{Quote(dialect, p.ColumnName, caseSensitive)} = @{p.PropertyName}"));
+        var sql = $"UPDATE {QualifiedTable(dialect, method.Entity, caseSensitive)} SET {setSql} WHERE {Quote(dialect, method.Entity.KeyProperty.ColumnName, caseSensitive)} = @{method.Entity.KeyProperty.PropertyName};";
         var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", {entityParameter}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
 
         if (method.IsTaskWithoutResult)
@@ -1106,7 +1125,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine($"        return {executeExpression};");
     }
 
-    private static void RenderDelete(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect)
+    private static void RenderDelete(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect, bool caseSensitive)
     {
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
         if (operationParameters.Count == 0)
@@ -1115,12 +1134,12 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return;
         }
 
-        var table = method.Entity is null ? QualifiedTable(dialect, "Unknown") : QualifiedTable(dialect, method.Entity);
+        var table = method.Entity is null ? QualifiedTable(dialect, "Unknown", caseSensitive) : QualifiedTable(dialect, method.Entity, caseSensitive);
         var keyColumn = method.Entity?.KeyProperty?.ColumnName ?? operationParameters[0].Name;
         var paramName = operationParameters[0].Name;
         sb.AppendLine($"        EnsureTransactionRequired(\"{method.Name}\");");
         sb.AppendLine("        var transaction = ResolveTransaction();");
-        var sql = $"DELETE FROM {table} WHERE {Quote(dialect, keyColumn)} = @{paramName};";
+        var sql = $"DELETE FROM {table} WHERE {Quote(dialect, keyColumn, caseSensitive)} = @{paramName};";
         var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", new {{ {paramName} }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
 
         if (method.IsTaskWithoutResult)
@@ -1133,7 +1152,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine($"        return {executeExpression};");
     }
 
-    private static void RenderGetById(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect)
+    private static void RenderGetById(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect, bool caseSensitive)
     {
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
         if (method.Entity is null || method.Entity.KeyProperty is null || operationParameters.Count == 0)
@@ -1144,14 +1163,14 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
         var keyParameter = operationParameters[0].Name;
         sb.AppendLine("        var transaction = ResolveTransaction();");
-        var selectSql = BuildEntitySelect(method.Entity, dialect);
-        var sql = $"{selectSql} WHERE {Quote(dialect, method.Entity.KeyProperty.ColumnName)} = @{keyParameter};";
+        var selectSql = BuildEntitySelect(method.Entity, dialect, caseSensitive);
+        var sql = $"{selectSql} WHERE {Quote(dialect, method.Entity.KeyProperty.ColumnName, caseSensitive)} = @{keyParameter};";
 
         sb.AppendLine($"        var rows = await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ {keyParameter} }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
         sb.AppendLine("        return rows.FirstOrDefault();");
     }
 
-    private static void RenderGetAll(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect)
+    private static void RenderGetAll(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect, bool caseSensitive)
     {
         if (method.Entity is null)
         {
@@ -1159,13 +1178,13 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return;
         }
 
-        var sql = BuildEntitySelect(method.Entity, dialect) + ";";
+        var sql = BuildEntitySelect(method.Entity, dialect, caseSensitive) + ";";
 
         sb.AppendLine("        var transaction = ResolveTransaction();");
         sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", transaction: transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
     }
 
-    private static void RenderGetPage(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect)
+    private static void RenderGetPage(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect, bool caseSensitive)
     {
         if (method.Entity is null)
         {
@@ -1174,7 +1193,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         }
 
         var orderBy = method.Entity.KeyProperty?.ColumnName ?? method.Entity.Properties.FirstOrDefault()?.ColumnName ?? "Id";
-        var orderBySql = $"{BuildEntitySelect(method.Entity, dialect)} ORDER BY {Quote(dialect, orderBy)}";
+        var orderBySql = $"{BuildEntitySelect(method.Entity, dialect, caseSensitive)} ORDER BY {Quote(dialect, orderBy, caseSensitive)}";
         var sql = dialect switch
         {
             DatabaseDialect.PostgreSql => $"{orderBySql} LIMIT @take OFFSET @skip;",
@@ -1185,7 +1204,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ skip, take }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
     }
 
-    private static void RenderQuery(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect)
+    private static void RenderQuery(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect, bool caseSensitive)
     {
         var entity = method.Entity;
         var from = method.QueryMetadata.From;
@@ -1193,25 +1212,25 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
         if (string.IsNullOrWhiteSpace(from))
         {
-            from = entity is null ? QualifiedTable(dialect, "Unknown") : QualifiedTable(dialect, entity);
+            from = entity is null ? QualifiedTable(dialect, "Unknown", caseSensitive) : QualifiedTable(dialect, entity, caseSensitive);
         }
         else if (!IsQualifiedTableExpression(from!))
         {
-            from = QualifiedTable(dialect, method.QueryMetadata.Schema, method.QueryMetadata.IsSchemaExplicit, from!);
+            from = QualifiedTable(dialect, method.QueryMetadata.Schema, method.QueryMetadata.IsSchemaExplicit, from!, caseSensitive);
         }
 
         var selectColumns = entity is null
             ? "*"
-            : string.Join(", ", entity.Properties.Select(p => $"{baseAlias}.{Quote(dialect, p.ColumnName)} AS {Quote(dialect, p.PropertyName)}"));
+            : string.Join(", ", entity.Properties.Select(p => $"{baseAlias}.{Quote(dialect, p.ColumnName, caseSensitive)} AS {Quote(dialect, p.PropertyName, caseSensitive)}"));
 
         var joinSql = string.IsNullOrWhiteSpace(method.QueryMetadata.Join)
-            ? BuildJoinClauses(method.QueryMetadata.Joins, baseAlias, dialect)
+            ? BuildJoinClauses(method.QueryMetadata.Joins, baseAlias, dialect, caseSensitive)
             : " " + method.QueryMetadata.Join;
 
         var whereSql = string.IsNullOrWhiteSpace(method.QueryMetadata.Where) ? string.Empty : $" WHERE {method.QueryMetadata.Where}";
         var orderBySql = method.QueryMetadata.OrderByColumn is null
             ? string.Empty
-            : $" ORDER BY {baseAlias}.{Quote(dialect, method.QueryMetadata.OrderByColumn)} {ToSql(method.QueryMetadata.OrderByDirection)}";
+            : $" ORDER BY {baseAlias}.{Quote(dialect, method.QueryMetadata.OrderByColumn, caseSensitive)} {ToSql(method.QueryMetadata.OrderByDirection)}";
         var sql = $"SELECT {selectColumns} FROM {from} {baseAlias}{joinSql}{whereSql}{orderBySql};";
 
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
@@ -1223,10 +1242,10 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", {anonymousParam}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
     }
 
-    private static void RenderStoredProcedure(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect)
+    private static void RenderStoredProcedure(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect, bool caseSensitive)
     {
         var storedProcedure = method.QueryMetadata.StoredProcedure;
-        var procedureName = ResolveStoredProcedureName(dialect, storedProcedure);
+        var procedureName = ResolveStoredProcedureName(dialect, storedProcedure, caseSensitive);
 
         sb.AppendLine($"        EnsureTransactionRequired(\"{method.Name}\");");
         sb.AppendLine("        var transaction = ResolveTransaction();");
@@ -1278,13 +1297,13 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine("        return result.Rows.FirstOrDefault();");
     }
 
-    private static string BuildEntitySelect(EntityModel entity, DatabaseDialect dialect)
+    private static string BuildEntitySelect(EntityModel entity, DatabaseDialect dialect, bool caseSensitive)
     {
-        var selectColumns = string.Join(", ", entity.Properties.Select(p => $"{Quote(dialect, p.ColumnName)} AS {Quote(dialect, p.PropertyName)}"));
-        return $"SELECT {selectColumns} FROM {QualifiedTable(dialect, entity)}";
+        var selectColumns = string.Join(", ", entity.Properties.Select(p => $"{Quote(dialect, p.ColumnName, caseSensitive)} AS {Quote(dialect, p.PropertyName, caseSensitive)}"));
+        return $"SELECT {selectColumns} FROM {QualifiedTable(dialect, entity, caseSensitive)}";
     }
 
-    private static string BuildJoinClauses(IReadOnlyList<QueryJoinModel> joins, string baseAlias, DatabaseDialect dialect)
+    private static string BuildJoinClauses(IReadOnlyList<QueryJoinModel> joins, string baseAlias, DatabaseDialect dialect, bool caseSensitive)
     {
         if (joins.Count == 0)
         {
@@ -1301,34 +1320,34 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 _ => "INNER JOIN",
             };
 
-            var onClause = $"{baseAlias}.{Quote(dialect, join.LeftColumn)} = {join.Alias}.{Quote(dialect, join.RightColumn)}";
+            var onClause = $"{baseAlias}.{Quote(dialect, join.LeftColumn, caseSensitive)} = {join.Alias}.{Quote(dialect, join.RightColumn, caseSensitive)}";
             if (!string.IsNullOrWhiteSpace(join.Where))
             {
                 onClause += $" AND ({join.Where})";
             }
 
-            var table = QualifiedTable(dialect, join.TableSchema, join.IsSchemaExplicit, join.TableName);
+            var table = QualifiedTable(dialect, join.TableSchema, join.IsSchemaExplicit, join.TableName, caseSensitive);
             return $" {keyword} {table} {join.Alias} ON {onClause}";
         });
 
         return string.Concat(clauses);
     }
 
-    private static string QualifiedTable(DatabaseDialect dialect, EntityModel entity)
-        => QualifiedTable(dialect, entity.Schema, entity.IsSchemaExplicit, entity.TableName);
+    private static string QualifiedTable(DatabaseDialect dialect, EntityModel entity, bool caseSensitive)
+        => QualifiedTable(dialect, entity.Schema, entity.IsSchemaExplicit, entity.TableName, caseSensitive);
 
-    private static string QualifiedTable(DatabaseDialect dialect, string table)
-        => QualifiedTable(dialect, schema: null, isSchemaExplicit: false, table);
+    private static string QualifiedTable(DatabaseDialect dialect, string table, bool caseSensitive)
+        => QualifiedTable(dialect, schema: null, isSchemaExplicit: false, table, caseSensitive);
 
-    private static string QualifiedTable(DatabaseDialect dialect, string? schema, bool isSchemaExplicit, string table)
+    private static string QualifiedTable(DatabaseDialect dialect, string? schema, bool isSchemaExplicit, string table, bool caseSensitive)
     {
         var resolvedSchema = isSchemaExplicit ? schema : ResolveDefaultSchema(dialect, schema);
         if (string.IsNullOrWhiteSpace(resolvedSchema))
         {
-            return Quote(dialect, table);
+            return Quote(dialect, table, caseSensitive);
         }
 
-        return $"{Quote(dialect, resolvedSchema!)}.{Quote(dialect, table)}";
+        return $"{Quote(dialect, resolvedSchema!, caseSensitive)}.{Quote(dialect, table, caseSensitive)}";
     }
 
     private static bool IsQualifiedTableExpression(string value)
@@ -1338,10 +1357,12 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             || value.IndexOf("`", StringComparison.Ordinal) >= 0
             || value.IndexOf(".", StringComparison.Ordinal) >= 0;
 
-    private static string Quote(DatabaseDialect dialect, string identifier)
+    private static string Quote(DatabaseDialect dialect, string identifier, bool caseSensitive)
         => dialect switch
         {
-            DatabaseDialect.PostgreSql => $"\"{identifier.Replace("\"", "\"\"")}\"",
+            DatabaseDialect.PostgreSql => caseSensitive
+                ? $"\"{identifier.Replace("\"", "\"\"")}\""
+                : identifier,
             _ => $"[{identifier.Replace("]", "]]")}]",
         };
 
@@ -1359,7 +1380,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         };
     }
 
-    private static string ResolveStoredProcedureName(DatabaseDialect dialect, StoredProcedureMetadata? storedProcedure)
+    private static string ResolveStoredProcedureName(DatabaseDialect dialect, StoredProcedureMetadata? storedProcedure, bool caseSensitive)
     {
         var name = storedProcedure?.Name;
         if (string.IsNullOrWhiteSpace(name))
@@ -1372,10 +1393,10 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var resolvedSchema = isSchemaExplicit ? schema : ResolveDefaultSchema(dialect, schema);
         if (string.IsNullOrWhiteSpace(resolvedSchema))
         {
-            return Quote(dialect, name!);
+            return Quote(dialect, name!, caseSensitive);
         }
 
-        return $"{Quote(dialect, resolvedSchema!)}.{Quote(dialect, name!)}";
+        return $"{Quote(dialect, resolvedSchema!, caseSensitive)}.{Quote(dialect, name!, caseSensitive)}";
     }
 
     private static string EscapeSql(string sql)
@@ -1437,6 +1458,24 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             if (argument.Key == argumentName)
             {
                 return argument.Value.Value as int?;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool? ReadNamedAttributeBool(AttributeData? attributeData, string argumentName)
+    {
+        if (attributeData is null)
+        {
+            return null;
+        }
+
+        foreach (var argument in attributeData.NamedArguments)
+        {
+            if (argument.Key == argumentName)
+            {
+                return argument.Value.Value as bool?;
             }
         }
 
@@ -1576,7 +1615,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         string InterfaceName,
         string InterfaceQualifiedName,
         string ImplementationName,
-        IReadOnlyList<RepositoryMethodModel> Methods);
+        IReadOnlyList<RepositoryMethodModel> Methods,
+        bool CaseSensitive);
 
     private sealed record UnitOfWorkModel(
         string? Namespace,
