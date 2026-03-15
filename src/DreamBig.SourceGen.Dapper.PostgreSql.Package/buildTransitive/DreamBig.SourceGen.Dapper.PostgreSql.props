@@ -2,4 +2,7 @@
   <PropertyGroup>
     <DreamBigDapperDialect>PostgreSql</DreamBigDapperDialect>
   </PropertyGroup>
+  <ItemGroup>
+    <CompilerVisibleProperty Include="DreamBigDapperDialect" />
+  </ItemGroup>
 </Project>

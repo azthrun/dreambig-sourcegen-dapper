@@ -2,4 +2,7 @@
   <PropertyGroup>
     <DreamBigDapperDialect>SqlServer</DreamBigDapperDialect>
   </PropertyGroup>
+  <ItemGroup>
+    <CompilerVisibleProperty Include="DreamBigDapperDialect" />
+  </ItemGroup>
 </Project>
