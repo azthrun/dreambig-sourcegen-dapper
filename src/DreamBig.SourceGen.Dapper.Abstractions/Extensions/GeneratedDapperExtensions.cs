@@ -63,10 +63,7 @@ public static class GeneratedDapperExtensions
         IDbTransaction? transaction = null,
         int? commandTimeout = null)
     {
-        if (connection is null)
-        {
-            throw new ArgumentNullException(nameof(connection));
-        }
+        ArgumentNullException.ThrowIfNull(connection);
 
         return connection.Query<T>(sql, param, transaction, true, commandTimeout);
     }
@@ -90,10 +87,7 @@ public static class GeneratedDapperExtensions
         int? commandTimeout = null,
         CancellationToken cancellationToken = default)
     {
-        if (connection is null)
-        {
-            throw new ArgumentNullException(nameof(connection));
-        }
+        ArgumentNullException.ThrowIfNull(connection);
 
         _ = cancellationToken;
 
@@ -116,10 +110,7 @@ public static class GeneratedDapperExtensions
         IDbTransaction? transaction = null,
         int? commandTimeout = null)
     {
-        if (connection is null)
-        {
-            throw new ArgumentNullException(nameof(connection));
-        }
+        ArgumentNullException.ThrowIfNull(connection);
 
         return connection.Execute(sql, param, transaction, commandTimeout);
     }
@@ -142,10 +133,7 @@ public static class GeneratedDapperExtensions
         int? commandTimeout = null,
         CancellationToken cancellationToken = default)
     {
-        if (connection is null)
-        {
-            throw new ArgumentNullException(nameof(connection));
-        }
+        ArgumentNullException.ThrowIfNull(connection);
 
         _ = cancellationToken;
 
@@ -171,15 +159,9 @@ public static class GeneratedDapperExtensions
         IDbTransaction? transaction = null,
         int? commandTimeout = null)
     {
-        if (connection is null)
-        {
-            throw new ArgumentNullException(nameof(connection));
-        }
+        ArgumentNullException.ThrowIfNull(connection);
 
-        if (parameters is null)
-        {
-            throw new ArgumentNullException(nameof(parameters));
-        }
+        ArgumentNullException.ThrowIfNull(parameters);
 
         var rows = connection.Query<T>(
                 procedureName,
@@ -216,15 +198,9 @@ public static class GeneratedDapperExtensions
         int? commandTimeout = null,
         CancellationToken cancellationToken = default)
     {
-        if (connection is null)
-        {
-            throw new ArgumentNullException(nameof(connection));
-        }
+        ArgumentNullException.ThrowIfNull(connection);
 
-        if (parameters is null)
-        {
-            throw new ArgumentNullException(nameof(parameters));
-        }
+        ArgumentNullException.ThrowIfNull(parameters);
 
         var command = new CommandDefinition(
             procedureName,

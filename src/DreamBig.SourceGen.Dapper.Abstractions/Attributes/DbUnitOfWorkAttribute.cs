@@ -4,6 +4,4 @@ namespace DreamBig.SourceGen.Dapper.Attributes;
 /// Marks an interface for source-generated Unit of Work implementation.
 /// </summary>
 [AttributeUsage(AttributeTargets.Interface, Inherited = false)]
-public sealed class DbUnitOfWorkAttribute : Attribute
-{
-}
+public sealed class DbUnitOfWorkAttribute : Attribute;

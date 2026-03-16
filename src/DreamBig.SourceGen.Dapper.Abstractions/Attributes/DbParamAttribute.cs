@@ -5,24 +5,20 @@ namespace DreamBig.SourceGen.Dapper.Attributes;
 /// <summary>
 /// Declares stored procedure parameter metadata.
 /// </summary>
+/// <remarks>
+/// Initializes a new instance of the <see cref="DbParamAttribute"/> class.
+/// </remarks>
+/// <param name="name">Parameter name, including <c>@</c> prefix.</param>
 [AttributeUsage(AttributeTargets.Parameter, Inherited = false)]
-public sealed class DbParamAttribute : Attribute
+public sealed class DbParamAttribute(string name) : Attribute
 {
-    /// <summary>
-    /// Initializes a new instance of the <see cref="DbParamAttribute"/> class.
-    /// </summary>
-    /// <param name="name">Parameter name, including <c>@</c> prefix.</param>
-    public DbParamAttribute(string name)
-    {
-        Name = string.IsNullOrWhiteSpace(name)
-            ? throw new ArgumentException("Parameter name cannot be null or whitespace.", nameof(name))
-            : name;
-    }
 
     /// <summary>
     /// Gets parameter name.
     /// </summary>
-    public string Name { get; }
+    public string Name { get; } = string.IsNullOrWhiteSpace(name)
+            ? throw new ArgumentException("Parameter name cannot be null or whitespace.", nameof(name))
+            : name;
 
     /// <summary>
     /// Gets or sets parameter direction.

@@ -24,15 +24,9 @@ public static class DreamBigDapperSqlServerServiceCollectionExtensions
         this IServiceCollection services,
         IConfiguration configuration)
     {
-        if (services is null)
-        {
-            throw new ArgumentNullException(nameof(services));
-        }
+        ArgumentNullException.ThrowIfNull(services);
 
-        if (configuration is null)
-        {
-            throw new ArgumentNullException(nameof(configuration));
-        }
+        ArgumentNullException.ThrowIfNull(configuration);
 
         services
             .AddOptions<DreamBigDapperSqlServerOptions>()
@@ -55,10 +49,7 @@ public static class DreamBigDapperSqlServerServiceCollectionExtensions
         this IServiceCollection services,
         string connectionString)
     {
-        if (services is null)
-        {
-            throw new ArgumentNullException(nameof(services));
-        }
+        ArgumentNullException.ThrowIfNull(services);
 
         if (string.IsNullOrWhiteSpace(connectionString))
         {
@@ -78,15 +69,9 @@ public static class DreamBigDapperSqlServerServiceCollectionExtensions
         this IServiceCollection services,
         Func<IServiceProvider, string> connectionStringFactory)
     {
-        if (services is null)
-        {
-            throw new ArgumentNullException(nameof(services));
-        }
+        ArgumentNullException.ThrowIfNull(services);
 
-        if (connectionStringFactory is null)
-        {
-            throw new ArgumentNullException(nameof(connectionStringFactory));
-        }
+        ArgumentNullException.ThrowIfNull(connectionStringFactory);
 
         services.AddSingleton<Func<IServiceProvider, string>>(connectionStringFactory);
         services.AddScoped<IDbConnection>(static provider =>
@@ -131,7 +116,7 @@ public static class DreamBigDapperSqlServerServiceCollectionExtensions
             "AddDreamBigDapperGenerated",
             BindingFlags.Public | BindingFlags.Static,
             binder: null,
-            types: new[] { typeof(IServiceCollection) },
+            types: [typeof(IServiceCollection)],
             modifiers: null);
 
         if (method is null)
@@ -139,7 +124,7 @@ public static class DreamBigDapperSqlServerServiceCollectionExtensions
             return;
         }
 
-        method.Invoke(null, new object?[] { services });
+        method.Invoke(null, [services]);
     }
 
     private const string GeneratedExtensionsTypeName =

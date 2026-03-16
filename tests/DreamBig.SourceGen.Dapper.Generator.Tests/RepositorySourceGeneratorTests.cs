@@ -634,17 +634,11 @@ public interface IAppUnitOfWork
             runResult.GeneratedTrees.ToImmutableArray());
     }
 
-    private sealed class GeneratorResult
+    private sealed class GeneratorResult(ImmutableArray<Diagnostic> diagnostics, ImmutableArray<SyntaxTree> generatedTrees)
     {
-        public GeneratorResult(ImmutableArray<Diagnostic> diagnostics, ImmutableArray<SyntaxTree> generatedTrees)
-        {
-            Diagnostics = diagnostics;
-            GeneratedTrees = generatedTrees;
-        }
+        public ImmutableArray<Diagnostic> Diagnostics { get; } = diagnostics;
 
-        public ImmutableArray<Diagnostic> Diagnostics { get; }
-
-        public ImmutableArray<SyntaxTree> GeneratedTrees { get; }
+        public ImmutableArray<SyntaxTree> GeneratedTrees { get; } = generatedTrees;
     }
 
     private sealed class TestAnalyzerConfigOptionsProvider : AnalyzerConfigOptionsProvider
@@ -669,14 +663,9 @@ public interface IAppUnitOfWork
         public override AnalyzerConfigOptions GetOptions(AdditionalText textFile) => _globalOptions;
     }
 
-    private sealed class TestAnalyzerConfigOptions : AnalyzerConfigOptions
+    private sealed class TestAnalyzerConfigOptions(IReadOnlyDictionary<string, string> options) : AnalyzerConfigOptions
     {
-        private readonly IReadOnlyDictionary<string, string> _options;
-
-        public TestAnalyzerConfigOptions(IReadOnlyDictionary<string, string> options)
-        {
-            _options = options;
-        }
+        private readonly IReadOnlyDictionary<string, string> _options = options;
 
         public override bool TryGetValue(string key, out string value)
         {
