@@ -300,7 +300,7 @@ public interface ICustomerReadRepository
             Environment.NewLine,
             result.GeneratedTrees.Select(static t => t.GetText().ToString()));
 
-        generated.ShouldContain("FROM [dbo].[Customers] customers INNER JOIN [dbo].[Orders] orders ON customers.Id = orders.CustomerId WHERE customers.[Id] = @id");
+        generated.ShouldContain("FROM [dbo].[Customers] customers INNER JOIN [dbo].[Orders] orders ON customers.Id = orders.CustomerId WHERE (customers.[Id] = @id)");
         generated.ShouldNotContain(" t0 ");
     }
 
