@@ -76,6 +76,46 @@ internal static class DiagnosticDescriptors
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
+    public static readonly DiagnosticDescriptor QueryReferenceInvalid = new(
+        id: "DBSGD017",
+        title: "Query reference is invalid",
+        messageFormat: "Method '{0}' contains query reference '{1}' that cannot be resolved.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor QueryReferenceAmbiguous = new(
+        id: "DBSGD018",
+        title: "Query reference is ambiguous",
+        messageFormat: "Method '{0}' contains query reference '{1}' that matches multiple joined tables.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor JoinAliasConflict = new(
+        id: "DBSGD019",
+        title: "Join alias is duplicated",
+        messageFormat: "Method '{0}' contains duplicate join alias '{1}'. Provide explicit aliases to disambiguate repeated tables.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor JoinSourceInvalid = new(
+        id: "DBSGD020",
+        title: "Join source is invalid",
+        messageFormat: "Method '{0}' contains join source alias '{1}' that has not been introduced by an earlier join.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor OrderByConflict = new(
+        id: "DBSGD021",
+        title: "Multiple ORDER BY clauses are configured",
+        messageFormat: "Method '{0}' defines multiple ORDER BY expressions. Only one ORDER BY may be configured per query.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
     public static readonly DiagnosticDescriptor AsyncReturnTypeRequired = new(
         id: "DBSGD006",
         title: "Async return type is required",

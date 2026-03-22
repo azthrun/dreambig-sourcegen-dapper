@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using DreamBig.SourceGen.Dapper.Generator.Diagnostics;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -455,98 +456,198 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var orderByDirectionValue = ReadNamedAttributeInt(queryAttribute, "OrderByDirection") ?? 0;
         var orderByDirection = orderByDirectionValue == 1 ? OrderByDirectionModel.Desc : OrderByDirectionModel.Asc;
         var joinOverride = ReadNamedAttributeString(queryAttribute, "Join");
-
-        var joins = method.GetAttributes()
+        var joinAttributes = method.GetAttributes()
             .Where(a => IsAttribute(a.AttributeClass, DbJoinAttribute))
-            .Select((a, index) =>
-            {
-                var joinTypeValue = ReadNamedAttributeInt(a, "JoinType") ?? 0;
-                var joinType = joinTypeValue switch
-                {
-                    1 => "Left",
-                    2 => "Right",
-                    3 => "Full",
-                    _ => "Inner",
-                };
-
-                var joinTableType = ReadNamedAttributeType(a, "JoinTable");
-                var joinColumnA = ReadNamedAttributeString(a, "JoinColumnA");
-                var joinColumnB = ReadNamedAttributeString(a, "JoinColumnB");
-                var joinWhere = ReadNamedAttributeString(a, "Where");
-                var joinSchemaExplicit = TryReadNamedAttributeString(a, "Schema", out var joinSchema);
-                if (!joinSchemaExplicit)
-                {
-                    joinSchema = null;
-                }
-
-                if (joinTableType is null)
-                {
-                    diagnostics.Add(Diagnostic.Create(
-                        DiagnosticDescriptors.JoinPropertyMissing,
-                        method.Locations.FirstOrDefault(),
-                        method.Name,
-                        "JoinTable"));
-                }
-
-                if (string.IsNullOrWhiteSpace(joinColumnA))
-                {
-                    diagnostics.Add(Diagnostic.Create(
-                        DiagnosticDescriptors.JoinPropertyMissing,
-                        method.Locations.FirstOrDefault(),
-                        method.Name,
-                        "JoinColumnA"));
-                }
-
-                if (string.IsNullOrWhiteSpace(joinColumnB))
-                {
-                    diagnostics.Add(Diagnostic.Create(
-                        DiagnosticDescriptors.JoinPropertyMissing,
-                        method.Locations.FirstOrDefault(),
-                        method.Name,
-                        "JoinColumnB"));
-                }
-
-                var joinTableEntity = joinTableType is null ? null : BuildEntityModel(joinTableType, method, diagnostics);
-                var tableName = joinTableEntity?.TableName ?? "Unknown";
-                var resolvedSchema = joinSchemaExplicit ? joinSchema : joinTableEntity?.Schema;
-                var resolvedSchemaExplicit = joinSchemaExplicit || (joinTableEntity?.IsSchemaExplicit ?? false);
-                var alias = $"t{index + 1}";
-
-                var leftColumn = ResolveJoinColumn(entity, joinColumnA, method, diagnostics, isLeft: true);
-                var rightColumn = ResolveJoinColumn(joinTableEntity, joinColumnB, method, diagnostics, isLeft: false);
-
-                return new QueryJoinModel(joinType, tableName, resolvedSchema, resolvedSchemaExplicit, alias, leftColumn, rightColumn, joinWhere);
-            })
             .ToList();
 
-        string? orderByColumn = null;
-        if (!string.IsNullOrWhiteSpace(orderBy))
+        var nodes = new Dictionary<string, QueryNodeModel>(StringComparer.OrdinalIgnoreCase);
+        var joins = new List<QueryJoinModel>();
+        var whereFragments = new List<string>();
+        string? configuredOrderBy = null;
+        var configuredOrderByDirection = orderByDirection;
+        string? baseAlias = null;
+
+        foreach (var joinAttribute in joinAttributes)
         {
-            if (entity is null)
+            var joinTypeValue = ReadNamedAttributeInt(joinAttribute, "JoinType") ?? 0;
+            var joinType = joinTypeValue switch
+            {
+                1 => "Left",
+                2 => "Right",
+                3 => "Full",
+                _ => "Inner",
+            };
+
+            var joinTableTypeA = ReadNamedAttributeType(joinAttribute, "JoinTableA");
+            var joinTableTypeB = ReadNamedAttributeType(joinAttribute, "JoinTableB");
+            var joinColumnA = ReadNamedAttributeString(joinAttribute, "JoinColumnA");
+            var joinColumnB = ReadNamedAttributeString(joinAttribute, "JoinColumnB");
+            var aliasA = ReadNamedAttributeString(joinAttribute, "AliasA");
+            var aliasB = ReadNamedAttributeString(joinAttribute, "AliasB");
+            var joinWhere = ReadNamedAttributeString(joinAttribute, "Where");
+            var joinOn = ReadNamedAttributeString(joinAttribute, "On");
+            var joinOrderBy = ReadNamedAttributeString(joinAttribute, "OrderBy");
+            var joinOrderByDirectionValue = ReadNamedAttributeInt(joinAttribute, "OrderByDirection") ?? 0;
+            var joinOrderByDirection = joinOrderByDirectionValue == 1 ? OrderByDirectionModel.Desc : OrderByDirectionModel.Asc;
+            var schemaAExplicit = TryReadNamedAttributeString(joinAttribute, "SchemaA", out var joinSchemaA);
+            var schemaBExplicit = TryReadNamedAttributeString(joinAttribute, "SchemaB", out var joinSchemaB);
+            if (!schemaAExplicit)
+            {
+                joinSchemaA = null;
+            }
+
+            if (!schemaBExplicit)
+            {
+                joinSchemaB = null;
+            }
+
+            if (joinTableTypeA is null)
             {
                 diagnostics.Add(Diagnostic.Create(
-                    DiagnosticDescriptors.OrderByColumnInvalid,
+                    DiagnosticDescriptors.JoinPropertyMissing,
                     method.Locations.FirstOrDefault(),
                     method.Name,
-                    orderBy,
-                    "(unknown)"));
+                    "JoinTableA"));
             }
-            else if (!TryResolveColumn(entity, orderBy!, out var resolvedOrderBy))
+
+            if (joinTableTypeB is null)
             {
                 diagnostics.Add(Diagnostic.Create(
-                    DiagnosticDescriptors.OrderByColumnInvalid,
+                    DiagnosticDescriptors.JoinPropertyMissing,
                     method.Locations.FirstOrDefault(),
                     method.Name,
-                    orderBy,
-                    entity.ClrTypeName));
+                    "JoinTableB"));
             }
-            else
+
+            if (string.IsNullOrWhiteSpace(joinColumnA))
             {
-                orderByColumn = resolvedOrderBy;
+                diagnostics.Add(Diagnostic.Create(
+                    DiagnosticDescriptors.JoinPropertyMissing,
+                    method.Locations.FirstOrDefault(),
+                    method.Name,
+                    "JoinColumnA"));
+            }
+
+            if (string.IsNullOrWhiteSpace(joinColumnB))
+            {
+                diagnostics.Add(Diagnostic.Create(
+                    DiagnosticDescriptors.JoinPropertyMissing,
+                    method.Locations.FirstOrDefault(),
+                    method.Name,
+                    "JoinColumnB"));
+            }
+
+            var joinEntityA = joinTableTypeA is null ? null : BuildEntityModel(joinTableTypeA, method, diagnostics);
+            var joinEntityB = joinTableTypeB is null ? null : BuildEntityModel(joinTableTypeB, method, diagnostics);
+            var resolvedAliasA = ResolveQueryAlias(aliasA, joinEntityA?.TableName, joinEntityA?.ClrTypeName, from);
+            var resolvedAliasB = ResolveQueryAlias(aliasB, joinEntityB?.TableName, joinEntityB?.ClrTypeName, joinEntityB?.TableName);
+
+            var leftNode = RegisterOrResolveJoinSource(
+                nodes,
+                resolvedAliasA,
+                joinEntityA,
+                schemaAExplicit ? joinSchemaA : joinEntityA?.Schema,
+                schemaAExplicit || (joinEntityA?.IsSchemaExplicit ?? false),
+                method,
+                diagnostics,
+                ref baseAlias);
+
+            var rightNode = RegisterJoinNode(
+                nodes,
+                resolvedAliasB,
+                joinEntityB,
+                schemaBExplicit ? joinSchemaB : joinEntityB?.Schema,
+                schemaBExplicit || (joinEntityB?.IsSchemaExplicit ?? false),
+                method,
+                diagnostics);
+
+            var leftColumn = ResolveJoinColumn(leftNode?.Entity ?? joinEntityA, joinColumnA, method, diagnostics, isLeft: true);
+            var rightColumn = ResolveJoinColumn(rightNode?.Entity ?? joinEntityB, joinColumnB, method, diagnostics, isLeft: false);
+            var rewrittenOn = RewriteQueryExpression(joinOn, nodes, method, diagnostics, dialect: null, caseSensitive: true);
+
+            joins.Add(new QueryJoinModel(
+                joinType,
+                rightNode?.TableName ?? "Unknown",
+                rightNode?.TableSchema,
+                rightNode?.IsSchemaExplicit ?? false,
+                leftNode?.Alias ?? resolvedAliasA,
+                rightNode?.Alias ?? resolvedAliasB,
+                leftColumn,
+                rightColumn,
+                rewrittenOn));
+
+            var rewrittenJoinWhere = RewriteQueryExpression(joinWhere, nodes, method, diagnostics, dialect: null, caseSensitive: true);
+            if (!string.IsNullOrWhiteSpace(rewrittenJoinWhere))
+            {
+                whereFragments.Add(rewrittenJoinWhere!);
+            }
+
+            if (!string.IsNullOrWhiteSpace(joinOrderBy))
+            {
+                if (!string.IsNullOrWhiteSpace(configuredOrderBy))
+                {
+                    diagnostics.Add(Diagnostic.Create(
+                        DiagnosticDescriptors.OrderByConflict,
+                        method.Locations.FirstOrDefault(),
+                        method.Name));
+                }
+                else
+                {
+                    configuredOrderBy = RewriteQueryExpression(joinOrderBy, nodes, method, diagnostics, dialect: null, caseSensitive: true);
+                    configuredOrderByDirection = joinOrderByDirection;
+                }
             }
         }
 
-        return new QueryMetadata(from, querySchema, schemaExplicit, where, orderByColumn, orderByDirection, joinOverride, joins);
+        if (string.IsNullOrWhiteSpace(baseAlias))
+        {
+            baseAlias = ResolveQueryAlias(explicitAlias: null, entity?.TableName, entity?.ClrTypeName, from);
+            _ = RegisterJoinNode(
+                nodes,
+                baseAlias,
+                entity,
+                entity?.Schema ?? querySchema,
+                entity?.IsSchemaExplicit ?? schemaExplicit,
+                method,
+                diagnostics,
+                allowExisting: true);
+        }
+
+        var rewrittenWhere = RewriteQueryExpression(where, nodes, method, diagnostics, dialect: null, caseSensitive: true);
+        if (!string.IsNullOrWhiteSpace(rewrittenWhere))
+        {
+            whereFragments.Insert(0, rewrittenWhere!);
+        }
+
+        if (!string.IsNullOrWhiteSpace(orderBy))
+        {
+            if (!string.IsNullOrWhiteSpace(configuredOrderBy))
+            {
+                diagnostics.Add(Diagnostic.Create(
+                    DiagnosticDescriptors.OrderByConflict,
+                    method.Locations.FirstOrDefault(),
+                    method.Name));
+            }
+            else
+            {
+                configuredOrderBy = RewriteQueryExpression(orderBy, nodes, method, diagnostics, dialect: null, caseSensitive: true);
+            }
+        }
+
+        var combinedWhere = whereFragments.Count == 0
+            ? null
+            : string.Join(" AND ", whereFragments.Select(static fragment => $"({fragment})"));
+
+        return new QueryMetadata(
+            from,
+            querySchema,
+            schemaExplicit,
+            baseAlias ?? "querySource",
+            combinedWhere,
+            configuredOrderBy,
+            configuredOrderByDirection,
+            joinOverride,
+            joins);
     }
 
     private static EntityModel? BuildEntityModel(INamedTypeSymbol type, IMethodSymbol method, List<Diagnostic> diagnostics)
@@ -1208,7 +1309,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     {
         var entity = method.Entity;
         var from = method.QueryMetadata.From;
-        var baseAlias = "t0";
+        var baseAlias = method.QueryMetadata.BaseAlias;
 
         if (string.IsNullOrWhiteSpace(from))
         {
@@ -1224,13 +1325,13 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             : string.Join(", ", entity.Properties.Select(p => $"{baseAlias}.{Quote(dialect, p.ColumnName, caseSensitive)} AS {Quote(dialect, p.PropertyName, caseSensitive)}"));
 
         var joinSql = string.IsNullOrWhiteSpace(method.QueryMetadata.Join)
-            ? BuildJoinClauses(method.QueryMetadata.Joins, baseAlias, dialect, caseSensitive)
+            ? BuildJoinClauses(method.QueryMetadata.Joins, dialect, caseSensitive)
             : " " + method.QueryMetadata.Join;
 
-        var whereSql = string.IsNullOrWhiteSpace(method.QueryMetadata.Where) ? string.Empty : $" WHERE {method.QueryMetadata.Where}";
-        var orderBySql = method.QueryMetadata.OrderByColumn is null
+        var whereSql = string.IsNullOrWhiteSpace(method.QueryMetadata.WhereSql) ? string.Empty : $" WHERE {FinalizeQueryExpression(method.QueryMetadata.WhereSql!, dialect, caseSensitive)}";
+        var orderBySql = method.QueryMetadata.OrderByExpression is null
             ? string.Empty
-            : $" ORDER BY {baseAlias}.{Quote(dialect, method.QueryMetadata.OrderByColumn, caseSensitive)} {ToSql(method.QueryMetadata.OrderByDirection)}";
+            : $" ORDER BY {FinalizeQueryExpression(method.QueryMetadata.OrderByExpression, dialect, caseSensitive)} {ToSql(method.QueryMetadata.OrderByDirection)}";
         var sql = $"SELECT {selectColumns} FROM {from} {baseAlias}{joinSql}{whereSql}{orderBySql};";
 
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
@@ -1303,7 +1404,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         return $"SELECT {selectColumns} FROM {QualifiedTable(dialect, entity, caseSensitive)}";
     }
 
-    private static string BuildJoinClauses(IReadOnlyList<QueryJoinModel> joins, string baseAlias, DatabaseDialect dialect, bool caseSensitive)
+    private static string BuildJoinClauses(IReadOnlyList<QueryJoinModel> joins, DatabaseDialect dialect, bool caseSensitive)
     {
         if (joins.Count == 0)
         {
@@ -1320,10 +1421,10 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 _ => "INNER JOIN",
             };
 
-            var onClause = $"{baseAlias}.{Quote(dialect, join.LeftColumn, caseSensitive)} = {join.Alias}.{Quote(dialect, join.RightColumn, caseSensitive)}";
-            if (!string.IsNullOrWhiteSpace(join.Where))
+            var onClause = $"{join.LeftAlias}.{Quote(dialect, join.LeftColumn, caseSensitive)} = {join.Alias}.{Quote(dialect, join.RightColumn, caseSensitive)}";
+            if (!string.IsNullOrWhiteSpace(join.OnSql))
             {
-                onClause += $" AND ({join.Where})";
+                onClause += $" AND ({FinalizeQueryExpression(join.OnSql!, dialect, caseSensitive)})";
             }
 
             var table = QualifiedTable(dialect, join.TableSchema, join.IsSchemaExplicit, join.TableName, caseSensitive);
@@ -1500,6 +1601,284 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         return null;
     }
 
+    private static QueryNodeModel? RegisterOrResolveJoinSource(
+        IDictionary<string, QueryNodeModel> nodes,
+        string alias,
+        EntityModel? entity,
+        string? schema,
+        bool isSchemaExplicit,
+        IMethodSymbol method,
+        List<Diagnostic> diagnostics,
+        ref string? baseAlias)
+    {
+        if (string.IsNullOrWhiteSpace(baseAlias))
+        {
+            baseAlias = alias;
+            return RegisterJoinNode(nodes, alias, entity, schema, isSchemaExplicit, method, diagnostics, allowExisting: true);
+        }
+
+        if (!nodes.TryGetValue(alias, out var node))
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.JoinSourceInvalid,
+                method.Locations.FirstOrDefault(),
+                method.Name,
+                alias));
+            return RegisterJoinNode(nodes, alias, entity, schema, isSchemaExplicit, method, diagnostics, allowExisting: true);
+        }
+
+        return node;
+    }
+
+    private static QueryNodeModel? RegisterJoinNode(
+        IDictionary<string, QueryNodeModel> nodes,
+        string alias,
+        EntityModel? entity,
+        string? schema,
+        bool isSchemaExplicit,
+        IMethodSymbol method,
+        List<Diagnostic> diagnostics,
+        bool allowExisting = false)
+    {
+        var tableName = entity?.TableName ?? "Unknown";
+        var node = new QueryNodeModel(alias, entity, tableName, schema, isSchemaExplicit);
+
+        if (nodes.TryGetValue(alias, out var existing))
+        {
+            if (allowExisting)
+            {
+                return existing;
+            }
+
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.JoinAliasConflict,
+                method.Locations.FirstOrDefault(),
+                method.Name,
+                alias));
+            return existing;
+        }
+
+        nodes[alias] = node;
+        return node;
+    }
+
+    private static string ResolveQueryAlias(string? explicitAlias, string? tableName, string? clrTypeName, string? fallback)
+    {
+        if (!string.IsNullOrWhiteSpace(explicitAlias))
+        {
+            return explicitAlias!;
+        }
+
+        var source = !string.IsNullOrWhiteSpace(tableName)
+            ? tableName
+            : !string.IsNullOrWhiteSpace(clrTypeName)
+                ? clrTypeName
+                : fallback;
+
+        return BuildDefaultAlias(source);
+    }
+
+    private static string BuildDefaultAlias(string? source)
+    {
+        var candidate = ExtractAliasSource(source);
+        if (string.IsNullOrWhiteSpace(candidate))
+        {
+            return "querySource";
+        }
+
+        var parts = Regex.Matches(candidate, "[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])")
+            .Cast<Match>()
+            .Select(static match => match.Value)
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .ToList();
+
+        if (parts.Count == 0)
+        {
+            parts = candidate
+                .Split(new[] { '_', '-', ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                .Where(static value => !string.IsNullOrWhiteSpace(value))
+                .ToList();
+        }
+
+        if (parts.Count == 0)
+        {
+            parts.Add(candidate);
+        }
+
+        var sb = new StringBuilder();
+        for (var i = 0; i < parts.Count; i++)
+        {
+            var part = parts[i];
+            var normalized = Regex.Replace(part, "[^A-Za-z0-9_]", string.Empty);
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                continue;
+            }
+
+            if (i == 0)
+            {
+                sb.Append(char.ToLowerInvariant(normalized[0]));
+                if (normalized.Length > 1)
+                {
+                    sb.Append(normalized.Substring(1));
+                }
+            }
+            else
+            {
+                sb.Append(char.ToUpperInvariant(normalized[0]));
+                if (normalized.Length > 1)
+                {
+                    sb.Append(normalized.Substring(1));
+                }
+            }
+        }
+
+        if (sb.Length == 0)
+        {
+            return "querySource";
+        }
+
+        if (!char.IsLetter(sb[0]) && sb[0] != '_')
+        {
+            sb.Insert(0, 't');
+        }
+
+        return sb.ToString();
+    }
+
+    private static string ExtractAliasSource(string? source)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return string.Empty;
+        }
+
+        var candidate = source!.Trim();
+        if (candidate.Contains('.'))
+        {
+            candidate = candidate.Split('.').Last();
+        }
+
+        candidate = candidate.Trim('[', ']', '"', '`');
+        return candidate;
+    }
+
+    private static string? RewriteQueryExpression(
+        string? expression,
+        IReadOnlyDictionary<string, QueryNodeModel> nodes,
+        IMethodSymbol method,
+        List<Diagnostic> diagnostics,
+        DatabaseDialect? dialect,
+        bool caseSensitive)
+    {
+        if (string.IsNullOrWhiteSpace(expression))
+        {
+            return null;
+        }
+
+        var rewritten = Regex.Replace(
+            expression!,
+            "(?<![@.\\[\"`])(?<alias>[A-Za-z_][A-Za-z0-9_]*)\\.(?<property>[A-Za-z_][A-Za-z0-9_]*)",
+            match =>
+            {
+                var alias = match.Groups["alias"].Value;
+                var property = match.Groups["property"].Value;
+                if (!nodes.TryGetValue(alias, out var node) || node.Entity is null)
+                {
+                    diagnostics.Add(Diagnostic.Create(
+                        DiagnosticDescriptors.QueryReferenceInvalid,
+                        method.Locations.FirstOrDefault(),
+                        method.Name,
+                        match.Value));
+                    return match.Value;
+                }
+
+                if (!TryResolveColumn(node.Entity, property, out var columnName))
+                {
+                    diagnostics.Add(Diagnostic.Create(
+                        DiagnosticDescriptors.QueryReferenceInvalid,
+                        method.Locations.FirstOrDefault(),
+                        method.Name,
+                        match.Value));
+                    return match.Value;
+                }
+
+                return $"{alias}.{FormatQueryColumn(columnName, dialect, caseSensitive)}";
+            });
+
+        rewritten = Regex.Replace(
+            rewritten,
+            "(?<![@.\\[\"`])\\b(?<token>[A-Za-z_][A-Za-z0-9_]*)\\b",
+            match =>
+            {
+                var token = match.Groups["token"].Value;
+                if (nodes.ContainsKey(token) || IsSqlKeyword(token))
+                {
+                    return token;
+                }
+
+                var matches = nodes.Values
+                    .Where(static n => n.Entity is not null)
+                    .Select(node => new
+                    {
+                        node.Alias,
+                        Entity = node.Entity!,
+                    })
+                    .Where(x => TryResolveColumn(x.Entity, token, out _))
+                    .ToList();
+
+                if (matches.Count == 0)
+                {
+                    return token;
+                }
+
+                if (matches.Count > 1)
+                {
+                    diagnostics.Add(Diagnostic.Create(
+                        DiagnosticDescriptors.QueryReferenceAmbiguous,
+                        method.Locations.FirstOrDefault(),
+                        method.Name,
+                        token));
+                    return token;
+                }
+
+                _ = TryResolveColumn(matches[0].Entity, token, out var columnName);
+                return $"{matches[0].Alias}.{FormatQueryColumn(columnName, dialect, caseSensitive)}";
+            });
+
+        return rewritten;
+    }
+
+    private static string FinalizeQueryExpression(string expression, DatabaseDialect dialect, bool caseSensitive)
+        => Regex.Replace(
+            expression,
+            "(?<alias>[A-Za-z_][A-Za-z0-9_]*)\\.(?<column>[A-Za-z_][A-Za-z0-9_]*)",
+            match => $"{match.Groups["alias"].Value}.{Quote(dialect, match.Groups["column"].Value, caseSensitive)}");
+
+    private static string FormatQueryColumn(string columnName, DatabaseDialect? dialect, bool caseSensitive)
+        => dialect is null ? columnName : Quote(dialect.Value, columnName, caseSensitive);
+
+    private static bool IsSqlKeyword(string token)
+        => token.ToUpperInvariant() is
+            "AND" or
+            "OR" or
+            "NOT" or
+            "IS" or
+            "NULL" or
+            "LIKE" or
+            "IN" or
+            "EXISTS" or
+            "BETWEEN" or
+            "ASC" or
+            "DESC" or
+            "ON" or
+            "CASE" or
+            "WHEN" or
+            "THEN" or
+            "ELSE" or
+            "END" or
+            "AS";
+
     private static bool TryResolveColumn(EntityModel entity, string propertyName, out string columnName)
     {
         var match = entity.Properties.FirstOrDefault(p =>
@@ -1668,8 +2047,9 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         string? From,
         string? Schema,
         bool IsSchemaExplicit,
-        string? Where,
-        string? OrderByColumn,
+        string BaseAlias,
+        string? WhereSql,
+        string? OrderByExpression,
         OrderByDirectionModel OrderByDirection,
         string? Join,
         IReadOnlyList<QueryJoinModel> Joins)
@@ -1677,15 +2057,23 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         public StoredProcedureMetadata? StoredProcedure { get; init; }
     }
 
+    private sealed record QueryNodeModel(
+        string Alias,
+        EntityModel? Entity,
+        string TableName,
+        string? TableSchema,
+        bool IsSchemaExplicit);
+
     private sealed record QueryJoinModel(
         string JoinType,
         string TableName,
         string? TableSchema,
         bool IsSchemaExplicit,
+        string LeftAlias,
         string Alias,
         string LeftColumn,
         string RightColumn,
-        string? Where);
+        string? OnSql);
 
     private sealed record StoredProcedureMetadata(
         string Name,

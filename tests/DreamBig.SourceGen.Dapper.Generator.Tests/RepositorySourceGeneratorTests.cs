@@ -170,8 +170,8 @@ public sealed class Order
 [DbRepository]
 public interface ICustomerReadRepository
 {
-    [DbQuery(From = "Customers", Schema = "dbo", Where = "[IsActive] = @isActive", OrderBy = "Id", OrderByDirection = OrderByDirection.Desc)]
-    [DbJoin(JoinType = JoinType.Left, JoinTable = typeof(Order), JoinColumnA = "Id", JoinColumnB = "CustomerId", Schema = "sales")]
+    [DbQuery(From = "Customers", Schema = "dbo")]
+    [DbJoin(JoinType = JoinType.Left, JoinTableA = typeof(Customer), JoinTableB = typeof(Order), JoinColumnA = "Id", JoinColumnB = "CustomerId", AliasA = "customers", AliasB = "orders", SchemaB = "sales", Where = "customers.IsActive = @isActive", OrderBy = "customers.Id", OrderByDirection = OrderByDirection.Desc)]
     Task<IEnumerable<Customer>> QueryActive(bool isActive, CancellationToken cancellationToken);
 
     [DbStoredProcedure("usp_customer_summary", Schema = "dbo")]
@@ -186,9 +186,10 @@ public interface ICustomerReadRepository
             Environment.NewLine,
             result.GeneratedTrees.Select(static t => t.GetText().ToString()));
 
-        generated.ShouldContain("LEFT OUTER JOIN [sales].[Orders] t1 ON t0.[Id] = t1.[CustomerId]");
-        generated.ShouldContain("FROM [dbo].[Customers] t0");
-        generated.ShouldContain("ORDER BY t0.[Id] DESC");
+        generated.ShouldContain("LEFT OUTER JOIN [sales].[Orders] orders ON customers.[Id] = orders.[CustomerId]");
+        generated.ShouldContain("FROM [dbo].[Customers] customers");
+        generated.ShouldContain("WHERE (customers.[IsActive] = @isActive)");
+        generated.ShouldContain("ORDER BY customers.[Id] DESC");
         generated.ShouldContain("[dbo].[usp_customer_summary]");
         generated.ShouldContain("System.Data.ParameterDirection.Output");
         generated.ShouldContain("QueryStoredProcedureGeneratedAsync<");
@@ -222,7 +223,7 @@ public sealed class Order
 public interface ICustomerReadRepository
 {
     [DbQuery(From = "[dbo].[Customers]")]
-    [DbJoin(JoinType = JoinType.Left, JoinTable = typeof(Order), JoinColumnA = "Missing", JoinColumnB = "CustomerId")]
+    [DbJoin(JoinType = JoinType.Left, JoinTableA = typeof(Customer), JoinTableB = typeof(Order), JoinColumnA = "Missing", JoinColumnB = "CustomerId")]
     Task<IEnumerable<Customer>> QueryActive(CancellationToken cancellationToken);
 }
 """;
@@ -263,7 +264,164 @@ public interface ICustomerReadRepository
             Environment.NewLine,
             result.GeneratedTrees.Select(static t => t.GetText().ToString()));
 
-        generated.ShouldContain("FROM [dbo].[Customers] t0");
+        generated.ShouldContain("FROM [dbo].[Customers] customers");
+    }
+
+    [Fact]
+    public void ShouldUseReadableAliasesForJoinOverride()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers", Schema = "dbo")]
+public sealed class Customer
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerReadRepository
+{
+    [DbQuery(From = "Customers", Schema = "dbo", Join = "INNER JOIN [dbo].[Orders] orders ON customers.Id = orders.CustomerId", Where = "customers.Id = @id")]
+    Task<IEnumerable<Customer>> QueryActive(int id, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("FROM [dbo].[Customers] customers INNER JOIN [dbo].[Orders] orders ON customers.Id = orders.CustomerId WHERE customers.[Id] = @id");
+        generated.ShouldNotContain(" t0 ");
+    }
+
+    [Fact]
+    public void ShouldReportAmbiguousBareWhereReferenceAcrossJoinedTables()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers", Schema = "dbo")]
+public sealed class Customer
+{
+    public int Id { get; set; }
+}
+
+[DbTable("Orders", Schema = "dbo")]
+public sealed class Order
+{
+    public int Id { get; set; }
+    public int CustomerId { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerReadRepository
+{
+    [DbJoin(JoinType = JoinType.Left, JoinTableA = typeof(Customer), JoinTableB = typeof(Order), JoinColumnA = "Id", JoinColumnB = "CustomerId", Where = "Id = @id")]
+    Task<IEnumerable<Customer>> QueryActive(int id, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD018").ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ShouldGenerateChainedJoinsWithReadableAliases()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers", Schema = "dbo")]
+public sealed class Customer
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbTable("Orders", Schema = "dbo")]
+public sealed class Order
+{
+    public int Id { get; set; }
+    public int CustomerId { get; set; }
+}
+
+[DbTable("OrderLines", Schema = "dbo")]
+public sealed class OrderLine
+{
+    public int Id { get; set; }
+    public int OrderId { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerReadRepository
+{
+    [DbJoin(JoinType = JoinType.Left, JoinTableA = typeof(Customer), JoinTableB = typeof(Order), JoinColumnA = "Id", JoinColumnB = "CustomerId", AliasA = "customers", AliasB = "orders")]
+    [DbJoin(JoinType = JoinType.Left, JoinTableA = typeof(Order), JoinTableB = typeof(OrderLine), JoinColumnA = "Id", JoinColumnB = "OrderId", AliasA = "orders", AliasB = "orderLines", Where = "orderLines.OrderId = @orderId")]
+    Task<IEnumerable<Customer>> QueryActive(int orderId, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("FROM [dbo].[Customers] customers");
+        generated.ShouldContain("LEFT OUTER JOIN [dbo].[Orders] orders ON customers.[Id] = orders.[CustomerId]");
+        generated.ShouldContain("LEFT OUTER JOIN [dbo].[OrderLines] orderLines ON orders.[Id] = orderLines.[OrderId]");
+        generated.ShouldContain("WHERE (orderLines.[OrderId] = @orderId)");
+    }
+
+    [Fact]
+    public void ShouldRequireExplicitAliasesWhenRepeatedTablesWouldCollide()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Employees", Schema = "dbo")]
+public sealed class Employee
+{
+    public int Id { get; set; }
+    public int ManagerId { get; set; }
+}
+
+[DbRepository]
+public interface IEmployeeReadRepository
+{
+    [DbJoin(JoinType = JoinType.Left, JoinTableA = typeof(Employee), JoinTableB = typeof(Employee), JoinColumnA = "ManagerId", JoinColumnB = "Id")]
+    Task<IEnumerable<Employee>> QueryManagers(CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD019").ShouldBeTrue();
     }
 
     [Fact]

@@ -107,16 +107,28 @@ public sealed class AttributeContractsTests
         var attribute = new DbJoinAttribute
         {
             JoinType = JoinType.Left,
-            JoinTable = typeof(string),
+            JoinTableA = typeof(string),
+            JoinTableB = typeof(int),
             JoinColumnA = "Id",
             JoinColumnB = "CustomerId",
-            Where = "[IsActive] = 1",
+            AliasA = "customers",
+            AliasB = "orders",
+            Where = "customers.Id = @customerId",
+            On = "orders.IsActive = 1",
+            OrderBy = "customers.Id",
+            OrderByDirection = OrderByDirection.Desc,
         };
 
         attribute.JoinType.ShouldBe(JoinType.Left);
-        attribute.JoinTable.ShouldBe(typeof(string));
+        attribute.JoinTableA.ShouldBe(typeof(string));
+        attribute.JoinTableB.ShouldBe(typeof(int));
         attribute.JoinColumnA.ShouldBe("Id");
         attribute.JoinColumnB.ShouldBe("CustomerId");
-        attribute.Where.ShouldBe("[IsActive] = 1");
+        attribute.AliasA.ShouldBe("customers");
+        attribute.AliasB.ShouldBe("orders");
+        attribute.Where.ShouldBe("customers.Id = @customerId");
+        attribute.On.ShouldBe("orders.IsActive = 1");
+        attribute.OrderBy.ShouldBe("customers.Id");
+        attribute.OrderByDirection.ShouldBe(OrderByDirection.Desc);
     }
 }

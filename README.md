@@ -19,7 +19,7 @@ Runtime library supports:
 
 ## Install
 
-- SQL Server: `DreamBig.SourceGen.Dapper`
+- SQL Server: `DreamBig.SourceGen.Dapper.SqlServer`
 - PostgreSQL: `DreamBig.SourceGen.Dapper.PostgreSql`
 
 ## DI Setup
@@ -120,15 +120,52 @@ using System.Threading;
 using System.Threading.Tasks;
 using DreamBig.SourceGen.Dapper.Attributes;
 
-[DbQuery(From = "Customers", Schema = "dbo", Where = "[IsActive] = @isActive", OrderBy = "Id", OrderByDirection = OrderByDirection.Desc)]
-[DbJoin(JoinType = JoinType.Left, JoinTable = typeof(Order), JoinColumnA = "Id", JoinColumnB = "CustomerId", Schema = "sales")]
+[DbJoin(
+    JoinType = JoinType.Left,
+    JoinTableA = typeof(Customer),
+    JoinTableB = typeof(Order),
+    JoinColumnA = "Id",
+    JoinColumnB = "CustomerId",
+    AliasA = "customers",
+    AliasB = "orders",
+    SchemaB = "sales",
+    On = "orders.IsDeleted = false",
+    Where = "customers.IsActive = @isActive",
+    OrderBy = "customers.Id",
+    OrderByDirection = OrderByDirection.Desc)]
 Task<IEnumerable<CustomerSummary>> QueryActive(bool isActive, CancellationToken cancellationToken);
 ```
 
+Chained joins can be expressed by adding multiple `[DbJoin]` attributes and referencing an earlier alias:
+
+```csharp
+[DbJoin(
+    JoinType = JoinType.Left,
+    JoinTableA = typeof(Customer),
+    JoinTableB = typeof(Order),
+    JoinColumnA = "Id",
+    JoinColumnB = "CustomerId",
+    AliasA = "customers",
+    AliasB = "orders")]
+[DbJoin(
+    JoinType = JoinType.Left,
+    JoinTableA = typeof(Order),
+    JoinTableB = typeof(OrderLine),
+    JoinColumnA = "Id",
+    JoinColumnB = "OrderId",
+    AliasA = "orders",
+    AliasB = "orderLines",
+    On = "orderLines.IsArchived = false",
+    Where = "orderLines.OrderId = @orderId")]
+Task<IEnumerable<CustomerSummary>> QueryCustomerOrders(int orderId, CancellationToken cancellationToken);
+```
+
 Notes:
-- The generator assigns table aliases (`t0`, `t1`, ...) automatically.
-- `OrderBy` expects a column/property name only; use `OrderByDirection` to control sort direction.
-- `JoinColumnA` and `JoinColumnB` must match CLR property names on the base entity and join entity (validated at compile time).
+- The generator assigns readable aliases from table names by default, such as `customers`, `orders`, and `orderLines`.
+- `Where`, `On`, and `OrderBy` support `alias.Property` syntax and map CLR property names to SQL columns.
+- Bare property names are only valid when they are unique across the joined tables.
+- `JoinColumnA` and `JoinColumnB` must match CLR property names on `JoinTableA` and `JoinTableB` (validated at compile time).
+- Multiple `[DbJoin]` attributes can be chained to build larger join graphs.
 
 ## Stored Procedure Example
 
