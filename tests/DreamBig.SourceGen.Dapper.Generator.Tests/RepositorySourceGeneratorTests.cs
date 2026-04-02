@@ -100,6 +100,41 @@ public interface ICustomerRepository
     }
 
     [Fact]
+    public void ShouldStripInterfacePrefixFromGeneratedRepository()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("CustomerOrders")]
+public sealed class CustomerOrder
+{
+    [DbKey]
+    public int Id { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerOrderRepository
+{
+    Task<int> InsertCustomerOrder(CustomerOrder entity, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("public sealed partial class CustomerOrderRepositoryGenerated");
+        generated.ShouldNotContain("ICustomerOrderRepositoryGenerated");
+    }
+
+    [Fact]
     public void ShouldDisablePostgreSqlCaseSensitiveQuotingWhenConfigured()
     {
         const string source = """

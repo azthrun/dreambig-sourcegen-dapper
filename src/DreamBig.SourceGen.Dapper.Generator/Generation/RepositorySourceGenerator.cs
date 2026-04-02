@@ -1163,7 +1163,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     {
         if (interfaceName.Length > 1
             && interfaceName[0] == 'I'
-            && char.IsUpper(interfaceName[1]))
+            && char.IsLetter(interfaceName[1]))
         {
             interfaceName = interfaceName.Substring(1);
         }
