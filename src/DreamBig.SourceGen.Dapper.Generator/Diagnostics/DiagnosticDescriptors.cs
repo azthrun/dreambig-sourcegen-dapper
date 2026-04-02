@@ -15,7 +15,7 @@ internal static class DiagnosticDescriptors
     public static readonly DiagnosticDescriptor UnsupportedSignature = new(
         id: "DBSGD002",
         title: "Unsupported repository method signature",
-        messageFormat: "Repository method '{0}' has an unsupported signature for generation.",
+        messageFormat: "Repository method '{0}' is not recognized. Use Insert*, Update*, Delete*, GetById*, GetAll*, GetPage*, [DbQuery], or [DbStoredProcedure].",
         category: "DreamBig.SourceGen.Dapper",
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true);

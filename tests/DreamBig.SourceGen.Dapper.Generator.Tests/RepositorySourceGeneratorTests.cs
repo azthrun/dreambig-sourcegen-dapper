@@ -59,6 +59,8 @@ public interface ICustomerRepository
         generated.ShouldContain("SELECT [Id] AS [Id], [full_name] AS [Name], [Email] AS [Email] FROM [dbo].[Customers]");
         generated.ShouldContain("public async global::System.Threading.Tasks.Task<int> InsertCustomer");
         generated.ShouldContain("public async global::System.Threading.Tasks.Task<global::Demo.Customer?> GetByIdCustomer");
+        generated.ShouldContain("public static IServiceCollection AddDreamBigDapperGenerated");
+        generated.ShouldContain("services.AddScoped<global::Demo.ICustomerRepository, global::Demo.CustomerRepositoryGenerated>();");
     }
 
     [Fact]
@@ -663,6 +665,7 @@ public interface IAppUnitOfWork
         generated.ShouldContain("EnsureTransactionRequired(\"InsertCustomer\")");
         generated.ShouldContain("EnsureTransactionRequired(\"DeleteOrder\")");
         generated.ShouldContain("var transaction = ResolveTransaction();");
+        generated.ShouldContain("services.AddScoped<global::Demo.IAppUnitOfWork, global::Demo.AppUnitOfWorkGenerated>();");
     }
 
     [Fact]
