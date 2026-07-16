@@ -25,6 +25,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     private const string DbJoinAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbJoinAttribute";
     private const string DbStoredProcedureAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbStoredProcedureAttribute";
     private const string DbParamAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbParamAttribute";
+    private const string DbOperationAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbOperationAttribute";
     private const string DialectPropertyName = "build_property.DreamBigDapperDialect";
     private static readonly SymbolDisplayFormat NullableAwareTypeFormat =
         SymbolDisplayFormat.FullyQualifiedFormat.WithMiscellaneousOptions(
@@ -352,31 +353,45 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
         var operationParameters = parameters.Where(static p => !p.IsCancellationToken).ToList();
 
-        INamedTypeSymbol? entityCandidateType = null;
+        var operationAttribute = method.GetAttributes().FirstOrDefault(a => IsAttribute(a.AttributeClass, DbOperationAttribute));
+        var returnsIdentity = operationKind == RepositoryOperationKind.Insert
+            && (ReadNamedAttributeBool(operationAttribute, "ReturnIdentity") ?? false);
 
-        switch (operationKind)
+        INamedTypeSymbol? entityCandidateType = ReadNamedAttributeType(operationAttribute, "Entity");
+
+        if (entityCandidateType is null)
         {
-            case RepositoryOperationKind.Insert:
-            case RepositoryOperationKind.Update:
-                if (operationParameters.Count == 1
-                    && method.Parameters.First(p => p.Name == operationParameters[0].Name).Type is INamedTypeSymbol entityType)
-                {
-                    entityCandidateType = entityType;
-                }
+            switch (operationKind)
+            {
+                case RepositoryOperationKind.Insert:
+                case RepositoryOperationKind.Update:
+                    if (operationParameters.Count == 1
+                        && method.Parameters.First(p => p.Name == operationParameters[0].Name).Type is INamedTypeSymbol entityType)
+                    {
+                        entityCandidateType = entityType;
+                    }
 
-                break;
-            case RepositoryOperationKind.GetById:
-            case RepositoryOperationKind.GetAll:
-            case RepositoryOperationKind.GetPage:
-            case RepositoryOperationKind.Query:
-            case RepositoryOperationKind.StoredProcedure:
-                entityCandidateType = methodShape.ElementType as INamedTypeSymbol;
-                break;
-            case RepositoryOperationKind.Delete:
-                entityCandidateType = TryResolveDeleteEntity(method);
-                break;
-            default:
-                break;
+                    break;
+                case RepositoryOperationKind.GetById:
+                case RepositoryOperationKind.GetAll:
+                case RepositoryOperationKind.GetPage:
+                case RepositoryOperationKind.GetBy:
+                case RepositoryOperationKind.Query:
+                case RepositoryOperationKind.StoredProcedure:
+                    entityCandidateType = methodShape.ElementType as INamedTypeSymbol;
+                    break;
+                case RepositoryOperationKind.Delete:
+                    entityCandidateType = TryResolveEntityFromName(method, "Delete");
+                    break;
+                case RepositoryOperationKind.Count:
+                    entityCandidateType = TryResolveEntityFromName(method, "Count");
+                    break;
+                case RepositoryOperationKind.Exists:
+                    entityCandidateType = TryResolveEntityFromName(method, "Exists");
+                    break;
+                default:
+                    break;
+            }
         }
 
         EntityModel? entity = null;
@@ -395,10 +410,74 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 or RepositoryOperationKind.Delete
                 or RepositoryOperationKind.GetById
                 or RepositoryOperationKind.GetAll
-                or RepositoryOperationKind.GetPage)
+                or RepositoryOperationKind.GetPage
+                or RepositoryOperationKind.GetBy
+                or RepositoryOperationKind.Count
+                or RepositoryOperationKind.Exists)
         {
             diagnostics.Add(Diagnostic.Create(
                 DiagnosticDescriptors.EntityUnresolved,
+                method.Locations.FirstOrDefault(),
+                method.Name));
+            return null;
+        }
+
+        var filters = new List<ConventionFilterModel>();
+        if (entity is not null
+            && operationKind is RepositoryOperationKind.GetBy
+                or RepositoryOperationKind.Count
+                or RepositoryOperationKind.Exists
+                or RepositoryOperationKind.Delete)
+        {
+            IReadOnlyList<string>? filterProperties = null;
+            if (TryParseByClause(method.Name, out _, out var byProperties)
+                && !(operationKind == RepositoryOperationKind.Delete
+                    && byProperties.Count == 1
+                    && byProperties[0].Equals("Id", StringComparison.OrdinalIgnoreCase)))
+            {
+                filterProperties = byProperties;
+            }
+
+            if (filterProperties is null
+                && operationKind is RepositoryOperationKind.GetBy or RepositoryOperationKind.Count or RepositoryOperationKind.Exists
+                && operationParameters.Count > 0)
+            {
+                filterProperties = operationParameters.Select(static p => p.Name).ToList();
+            }
+
+            if (filterProperties is not null)
+            {
+                if (filterProperties.Count != operationParameters.Count)
+                {
+                    diagnostics.Add(Diagnostic.Create(
+                        DiagnosticDescriptors.UnsupportedSignature,
+                        method.Locations.FirstOrDefault(),
+                        method.Name));
+                    return null;
+                }
+
+                for (var i = 0; i < filterProperties.Count; i++)
+                {
+                    if (!TryResolveColumn(entity, filterProperties[i], out var filterColumn))
+                    {
+                        diagnostics.Add(Diagnostic.Create(
+                            DiagnosticDescriptors.ConventionPropertyInvalid,
+                            method.Locations.FirstOrDefault(),
+                            method.Name,
+                            filterProperties[i],
+                            entity.ClrTypeName));
+                        return null;
+                    }
+
+                    filters.Add(new ConventionFilterModel(filterColumn, operationParameters[i].Name));
+                }
+            }
+        }
+
+        if (operationKind == RepositoryOperationKind.GetBy && filters.Count == 0)
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.UnsupportedSignature,
                 method.Locations.FirstOrDefault(),
                 method.Name));
             return null;
@@ -415,12 +494,26 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return null;
         }
 
+        if (operationKind is RepositoryOperationKind.GetPage
+            && !TryResolveGetPageParameters(operationParameters, out _, out _))
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.GetPageParametersUnrecognized,
+                method.Locations.FirstOrDefault(),
+                method.Name));
+            return null;
+        }
+
         if (methodShape.IsTaskWithoutResult
-            && operationKind is RepositoryOperationKind.GetById
+            && (operationKind is RepositoryOperationKind.GetById
                 or RepositoryOperationKind.GetAll
                 or RepositoryOperationKind.GetPage
+                or RepositoryOperationKind.GetBy
+                or RepositoryOperationKind.Count
+                or RepositoryOperationKind.Exists
                 or RepositoryOperationKind.Query
-                or RepositoryOperationKind.StoredProcedure)
+                or RepositoryOperationKind.StoredProcedure
+                || returnsIdentity))
         {
             diagnostics.Add(Diagnostic.Create(
                 DiagnosticDescriptors.UnsupportedSignature,
@@ -429,7 +522,45 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return null;
         }
 
-        if ((operationKind == RepositoryOperationKind.Update || operationKind == RepositoryOperationKind.Delete || operationKind == RepositoryOperationKind.GetById)
+        if (operationKind == RepositoryOperationKind.Count
+            && (methodShape.ReturnsEnumerable
+                || methodShape.IsProcedureResult
+                || methodShape.IsPagedResult
+                || (methodShape.ElementType is not null && methodShape.ElementType.SpecialType != SpecialType.System_Int64)))
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.UnsupportedSignature,
+                method.Locations.FirstOrDefault(),
+                method.Name));
+            return null;
+        }
+
+        if (operationKind == RepositoryOperationKind.Exists
+            && (methodShape.ReturnsEnumerable
+                || methodShape.IsProcedureResult
+                || methodShape.IsPagedResult
+                || methodShape.ElementType?.SpecialType != SpecialType.System_Boolean))
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.UnsupportedSignature,
+                method.Locations.FirstOrDefault(),
+                method.Name));
+            return null;
+        }
+
+        if (methodShape.IsPagedResult && operationKind != RepositoryOperationKind.GetPage)
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.UnsupportedSignature,
+                method.Locations.FirstOrDefault(),
+                method.Name));
+            return null;
+        }
+
+        if ((operationKind == RepositoryOperationKind.Update
+                || (operationKind == RepositoryOperationKind.Delete && filters.Count == 0)
+                || operationKind == RepositoryOperationKind.GetById
+                || returnsIdentity)
             && entity is not null
             && entity.KeyProperty is null)
         {
@@ -479,7 +610,9 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             storedProcedureMetadata = new StoredProcedureMetadata(spName!, spSchema, spSchemaExplicit);
         }
 
-        var queryMetadata = ReadQueryMetadata(method, entity, diagnostics);
+        var queryMetadata = operationKind == RepositoryOperationKind.GetPage
+            ? ReadGetPageOrdering(method, entity, diagnostics)
+            : ReadQueryMetadata(method, entity, diagnostics);
         if (storedProcedureMetadata is not null)
         {
             queryMetadata = queryMetadata with { StoredProcedure = storedProcedureMetadata };
@@ -502,13 +635,16 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             IsAsync: methodShape.IsAsync,
             ReturnsEnumerable: methodShape.ReturnsEnumerable,
             ReturnsProcedureResult: methodShape.IsProcedureResult,
+            ReturnsPagedResult: methodShape.IsPagedResult,
             IsTaskWithoutResult: methodShape.IsTaskWithoutResult,
             ElementTypeName: methodShape.ElementType?.ToDisplayString(NullableAwareTypeFormat),
             OperationKind: operationKind,
             Parameters: parameters,
             CancellationTokenParameterName: cancellationTokenParameter.Name,
             Entity: entity,
-            QueryMetadata: queryMetadata);
+            QueryMetadata: queryMetadata,
+            Filters: filters,
+            ReturnsIdentity: returnsIdentity);
     }
 
     private static QueryMetadata ReadQueryMetadata(IMethodSymbol method, EntityModel? entity, List<Diagnostic> diagnostics)
@@ -532,6 +668,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var nodes = new Dictionary<string, QueryNodeModel>(StringComparer.OrdinalIgnoreCase);
         var joins = new List<QueryJoinModel>();
         var whereFragments = new List<string>();
+        var rawParameterExpressions = new List<string?> { where, orderBy, joinOverride };
         string? configuredOrderBy = null;
         var configuredOrderByDirection = orderByDirection;
         string? baseAlias = null;
@@ -556,6 +693,9 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             var joinWhere = ReadNamedAttributeString(joinAttribute, "Where");
             var joinOn = ReadNamedAttributeString(joinAttribute, "On");
             var joinOrderBy = ReadNamedAttributeString(joinAttribute, "OrderBy");
+            rawParameterExpressions.Add(joinWhere);
+            rawParameterExpressions.Add(joinOn);
+            rawParameterExpressions.Add(joinOrderBy);
             var joinOrderByDirectionValue = ReadNamedAttributeInt(joinAttribute, "OrderByDirection") ?? 0;
             var joinOrderByDirection = joinOrderByDirectionValue == 1 ? OrderByDirectionModel.Desc : OrderByDirectionModel.Asc;
             var schemaAExplicit = TryReadNamedAttributeString(joinAttribute, "SchemaA", out var joinSchemaA);
@@ -707,6 +847,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             ? null
             : string.Join(" AND ", whereFragments.Select(static fragment => $"({fragment})"));
 
+        ValidateQueryParameterReferences(method, rawParameterExpressions, diagnostics);
+
         return new QueryMetadata(
             from,
             querySchema,
@@ -717,6 +859,128 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             configuredOrderByDirection,
             joinOverride,
             joins);
+    }
+
+    private static QueryMetadata ReadGetPageOrdering(IMethodSymbol method, EntityModel? entity, List<Diagnostic> diagnostics)
+    {
+        var queryAttribute = method.GetAttributes().FirstOrDefault(a => IsAttribute(a.AttributeClass, DbQueryAttribute));
+        var orderBy = ReadNamedAttributeString(queryAttribute, "OrderBy");
+        var orderByDirectionValue = ReadNamedAttributeInt(queryAttribute, "OrderByDirection") ?? 0;
+        var orderByDirection = orderByDirectionValue == 1 ? OrderByDirectionModel.Desc : OrderByDirectionModel.Asc;
+
+        string? orderByColumn = null;
+        if (!string.IsNullOrWhiteSpace(orderBy))
+        {
+            if (entity is not null && TryResolveColumn(entity, orderBy!.Trim(), out var resolvedColumn))
+            {
+                orderByColumn = resolvedColumn;
+            }
+            else
+            {
+                diagnostics.Add(Diagnostic.Create(
+                    DiagnosticDescriptors.OrderByColumnInvalid,
+                    method.Locations.FirstOrDefault(),
+                    method.Name,
+                    orderBy,
+                    entity?.ClrTypeName ?? "<unknown>"));
+            }
+        }
+
+        return new QueryMetadata(
+            From: null,
+            Schema: null,
+            IsSchemaExplicit: false,
+            BaseAlias: "querySource",
+            WhereSql: null,
+            OrderByExpression: orderByColumn,
+            OrderByDirection: orderByDirection,
+            Join: null,
+            Joins: Array.Empty<QueryJoinModel>());
+    }
+
+    private static bool TryResolveGetPageParameters(
+        IReadOnlyList<MethodParameterModel> operationParameters,
+        out string skipParameterName,
+        out string takeParameterName)
+    {
+        skipParameterName = string.Empty;
+        takeParameterName = string.Empty;
+        if (operationParameters.Count != 2)
+        {
+            return false;
+        }
+
+        var first = operationParameters[0].Name;
+        var second = operationParameters[1].Name;
+
+        if (IsGetPageSkipName(first) && IsGetPageTakeName(second))
+        {
+            skipParameterName = first;
+            takeParameterName = second;
+            return true;
+        }
+
+        if (IsGetPageTakeName(first) && IsGetPageSkipName(second))
+        {
+            skipParameterName = second;
+            takeParameterName = first;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsGetPageSkipName(string name)
+        => name.Equals("skip", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("offset", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsGetPageTakeName(string name)
+        => name.Equals("take", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("limit", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("pageSize", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("fetch", StringComparison.OrdinalIgnoreCase);
+
+    private static void ValidateQueryParameterReferences(
+        IMethodSymbol method,
+        IEnumerable<string?> expressions,
+        List<Diagnostic> diagnostics)
+    {
+        var parameterNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var parameter in method.Parameters)
+        {
+            if (!IsCancellationTokenType(parameter.Type))
+            {
+                parameterNames.Add(parameter.Name);
+            }
+        }
+
+        var reportedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var expression in expressions)
+        {
+            if (string.IsNullOrWhiteSpace(expression))
+            {
+                continue;
+            }
+
+            _ = RewriteOutsideLiterals(expression!, segment =>
+            {
+                // The lookbehind skips @@server_variables and PostgreSQL operators such as <@.
+                foreach (Match match in Regex.Matches(segment, "(?<![@<:$!])@(?<name>[A-Za-z_][A-Za-z0-9_]*)"))
+                {
+                    var name = match.Groups["name"].Value;
+                    if (!parameterNames.Contains(name) && reportedNames.Add(name))
+                    {
+                        diagnostics.Add(Diagnostic.Create(
+                            DiagnosticDescriptors.QueryParameterUnknown,
+                            method.Locations.FirstOrDefault(),
+                            method.Name,
+                            name));
+                    }
+                }
+
+                return segment;
+            });
+        }
     }
 
     private static EntityModel? BuildEntityModel(INamedTypeSymbol type, IMethodSymbol method, List<Diagnostic> diagnostics)
@@ -801,6 +1065,32 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return RepositoryOperationKind.StoredProcedure;
         }
 
+        var operationAttribute = method.GetAttributes().FirstOrDefault(a => IsAttribute(a.AttributeClass, DbOperationAttribute));
+        if (operationAttribute is not null
+            && operationAttribute.ConstructorArguments.Length > 0
+            && operationAttribute.ConstructorArguments[0].Value is int operationValue)
+        {
+            return operationValue switch
+            {
+                0 => RepositoryOperationKind.Insert,
+                1 => RepositoryOperationKind.Update,
+                2 => RepositoryOperationKind.Delete,
+                3 => RepositoryOperationKind.GetById,
+                4 => RepositoryOperationKind.GetAll,
+                5 => RepositoryOperationKind.GetPage,
+                6 => RepositoryOperationKind.GetBy,
+                7 => RepositoryOperationKind.Count,
+                8 => RepositoryOperationKind.Exists,
+                _ => RepositoryOperationKind.Unknown,
+            };
+        }
+
+        if (method.Name.StartsWith("GetPage", StringComparison.OrdinalIgnoreCase)
+            && IsOrderingOnlyQueryAttribute(method))
+        {
+            return RepositoryOperationKind.GetPage;
+        }
+
         if (HasAttribute(method, DbQueryAttribute) || method.GetAttributes().Any(a => IsAttribute(a.AttributeClass, DbJoinAttribute)))
         {
             return RepositoryOperationKind.Query;
@@ -836,12 +1126,99 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return RepositoryOperationKind.GetPage;
         }
 
+        if (method.Name.StartsWith("Count", StringComparison.OrdinalIgnoreCase))
+        {
+            return RepositoryOperationKind.Count;
+        }
+
+        if (method.Name.StartsWith("Exists", StringComparison.OrdinalIgnoreCase))
+        {
+            return RepositoryOperationKind.Exists;
+        }
+
+        if (method.Name.StartsWith("Get", StringComparison.OrdinalIgnoreCase)
+            && TryParseByClause(method.Name, out _, out var byProperties))
+        {
+            return byProperties.Count == 1 && byProperties[0].Equals("Id", StringComparison.OrdinalIgnoreCase)
+                ? RepositoryOperationKind.GetById
+                : RepositoryOperationKind.GetBy;
+        }
+
         return RepositoryOperationKind.Unknown;
     }
 
-    private static INamedTypeSymbol? TryResolveDeleteEntity(IMethodSymbol method)
+    /// <summary>
+    /// Splits a convention method name at the last "By" (followed by an uppercase letter) into a stem
+    /// and "And"-separated property names. An "Async" suffix is stripped from the stem either way.
+    /// </summary>
+    private static bool TryParseByClause(string methodName, out string stem, out IReadOnlyList<string> properties)
     {
-        if (!method.Name.StartsWith("Delete", StringComparison.OrdinalIgnoreCase))
+        var name = methodName;
+        if (name.EndsWith("Async", StringComparison.OrdinalIgnoreCase))
+        {
+            name = name.Substring(0, name.Length - "Async".Length);
+        }
+
+        stem = name;
+        properties = Array.Empty<string>();
+
+        var index = -1;
+        for (var i = name.Length - 3; i > 0; i--)
+        {
+            if (name[i] == 'B' && name[i + 1] == 'y' && char.IsUpper(name[i + 2]))
+            {
+                index = i;
+                break;
+            }
+        }
+
+        if (index < 0)
+        {
+            return false;
+        }
+
+        stem = name.Substring(0, index);
+        var clause = name.Substring(index + 2);
+
+        var parts = new List<string>();
+        var start = 0;
+        var position = 1;
+        while (position + 3 < clause.Length)
+        {
+            if (clause[position] == 'A'
+                && clause[position + 1] == 'n'
+                && clause[position + 2] == 'd'
+                && char.IsUpper(clause[position + 3]))
+            {
+                parts.Add(clause.Substring(start, position - start));
+                position += 3;
+                start = position;
+                continue;
+            }
+
+            position++;
+        }
+
+        parts.Add(clause.Substring(start));
+        properties = parts;
+        return true;
+    }
+
+    private static bool IsOrderingOnlyQueryAttribute(IMethodSymbol method)
+    {
+        var queryAttribute = method.GetAttributes().FirstOrDefault(a => IsAttribute(a.AttributeClass, DbQueryAttribute));
+        if (queryAttribute is null || method.GetAttributes().Any(a => IsAttribute(a.AttributeClass, DbJoinAttribute)))
+        {
+            return false;
+        }
+
+        return queryAttribute.NamedArguments.Length > 0
+            && queryAttribute.NamedArguments.All(static argument => argument.Key is "OrderBy" or "OrderByDirection");
+    }
+
+    private static INamedTypeSymbol? TryResolveEntityFromName(IMethodSymbol method, string prefix)
+    {
+        if (!method.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
@@ -860,20 +1237,12 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             }
         }
 
-        var candidateName = method.Name.Substring("Delete".Length);
-        if (candidateName.EndsWith("Async", StringComparison.OrdinalIgnoreCase))
-        {
-            candidateName = candidateName.Substring(0, candidateName.Length - "Async".Length);
-        }
+        _ = TryParseByClause(method.Name, out var stem, out _);
+        var candidateName = stem.Substring(prefix.Length);
 
         if (string.IsNullOrWhiteSpace(candidateName))
         {
             return null;
-        }
-
-        if (candidateName.EndsWith("ById", StringComparison.OrdinalIgnoreCase))
-        {
-            candidateName = candidateName.Substring(0, candidateName.Length - "ById".Length);
         }
 
         var containingNamespace = method.ContainingNamespace;
@@ -1005,9 +1374,33 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine("    }");
         sb.AppendLine();
 
-        foreach (var method in model.Methods)
+        var sqlConstants = BuildSqlConstants(model, dialect);
+        if (sqlConstants.Count > 0)
         {
-            sb.Append(RenderMethod(method, dialect, model.CaseSensitive));
+            sb.AppendLine("    /// <summary>SQL text executed by the generated repository methods.</summary>");
+            sb.AppendLine("    public static class Sql");
+            sb.AppendLine("    {");
+            for (var i = 0; i < sqlConstants.Count; i++)
+            {
+                var entry = sqlConstants[i];
+                if (i > 0)
+                {
+                    sb.AppendLine();
+                }
+
+                sb.AppendLine($"        /// <summary>SQL executed by <c>{entry.MethodName}</c>.</summary>");
+                sb.AppendLine($"        public const string {entry.ConstName} = \"{EscapeSql(entry.Sql)}\";");
+            }
+
+            sb.AppendLine("    }");
+            sb.AppendLine();
+        }
+
+        for (var i = 0; i < model.Methods.Count; i++)
+        {
+            var method = model.Methods[i];
+            var sqlConstName = sqlConstants.FirstOrDefault(entry => entry.MethodIndex == i)?.ConstName;
+            sb.Append(RenderMethod(method, sqlConstName));
             sb.AppendLine();
         }
 
@@ -1016,7 +1409,51 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         return sb.ToString();
     }
 
-    private static string RenderMethod(RepositoryMethodModel method, DatabaseDialect dialect, bool caseSensitive)
+    private static IReadOnlyList<SqlConstantEntry> BuildSqlConstants(RepositoryModel model, DatabaseDialect dialect)
+    {
+        var entries = new List<SqlConstantEntry>();
+        var usedNames = new HashSet<string>(StringComparer.Ordinal);
+
+        for (var i = 0; i < model.Methods.Count; i++)
+        {
+            var method = model.Methods[i];
+            var sql = BuildMethodSql(method, dialect, model.CaseSensitive);
+            if (sql is null)
+            {
+                continue;
+            }
+
+            var constName = method.Name;
+            var suffix = 2;
+            while (!usedNames.Add(constName))
+            {
+                constName = $"{method.Name}_{suffix++}";
+            }
+
+            entries.Add(new SqlConstantEntry(i, method.Name, constName, sql));
+        }
+
+        return entries;
+    }
+
+    private static string? BuildMethodSql(RepositoryMethodModel method, DatabaseDialect dialect, bool caseSensitive)
+        => method.OperationKind switch
+        {
+            RepositoryOperationKind.Insert => BuildInsertSql(method, dialect, caseSensitive),
+            RepositoryOperationKind.Update => BuildUpdateSql(method, dialect, caseSensitive),
+            RepositoryOperationKind.Delete => BuildDeleteSql(method, dialect, caseSensitive),
+            RepositoryOperationKind.GetById => BuildGetByIdSql(method, dialect, caseSensitive),
+            RepositoryOperationKind.GetAll => BuildGetAllSql(method, dialect, caseSensitive),
+            RepositoryOperationKind.GetPage => BuildGetPageSql(method, dialect, caseSensitive),
+            RepositoryOperationKind.GetBy => BuildGetBySql(method, dialect, caseSensitive),
+            RepositoryOperationKind.Count => BuildCountSql(method, dialect, caseSensitive),
+            RepositoryOperationKind.Exists => BuildCountSql(method, dialect, caseSensitive),
+            RepositoryOperationKind.Query => BuildQuerySql(method, dialect, caseSensitive),
+            RepositoryOperationKind.StoredProcedure => BuildStoredProcedureSql(method, dialect, caseSensitive),
+            _ => null,
+        };
+
+    private static string RenderMethod(RepositoryMethodModel method, string? sqlConstName)
     {
         var sb = new StringBuilder();
         var parameterList = string.Join(", ", method.Parameters.Select(static p => $"{p.TypeName} {p.Name}"));
@@ -1027,28 +1464,37 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         switch (method.OperationKind)
         {
             case RepositoryOperationKind.Insert:
-                RenderInsert(method, sb, dialect, caseSensitive);
+                RenderInsert(method, sb, sqlConstName);
                 break;
             case RepositoryOperationKind.Update:
-                RenderUpdate(method, sb, dialect, caseSensitive);
+                RenderUpdate(method, sb, sqlConstName);
                 break;
             case RepositoryOperationKind.Delete:
-                RenderDelete(method, sb, dialect, caseSensitive);
+                RenderDelete(method, sb, sqlConstName);
                 break;
             case RepositoryOperationKind.GetById:
-                RenderGetById(method, sb, dialect, caseSensitive);
+                RenderGetById(method, sb, sqlConstName);
                 break;
             case RepositoryOperationKind.GetAll:
-                RenderGetAll(method, sb, dialect, caseSensitive);
+                RenderGetAll(method, sb, sqlConstName);
                 break;
             case RepositoryOperationKind.GetPage:
-                RenderGetPage(method, sb, dialect, caseSensitive);
+                RenderGetPage(method, sb, sqlConstName);
+                break;
+            case RepositoryOperationKind.GetBy:
+                RenderGetBy(method, sb, sqlConstName);
+                break;
+            case RepositoryOperationKind.Count:
+                RenderCount(method, sb, sqlConstName);
+                break;
+            case RepositoryOperationKind.Exists:
+                RenderExists(method, sb, sqlConstName);
                 break;
             case RepositoryOperationKind.Query:
-                RenderQuery(method, sb, dialect, caseSensitive);
+                RenderQuery(method, sb, sqlConstName);
                 break;
             case RepositoryOperationKind.StoredProcedure:
-                RenderStoredProcedure(method, sb, dialect, caseSensitive);
+                RenderStoredProcedure(method, sb, sqlConstName);
                 break;
             default:
                 sb.AppendLine("        throw new NotSupportedException(\"Unsupported generated method.\");");
@@ -1340,10 +1786,41 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         return interfaceName + "Generated";
     }
 
-    private static void RenderInsert(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect, bool caseSensitive)
+    private static string? BuildInsertSql(RepositoryMethodModel method, DatabaseDialect dialect, bool caseSensitive)
     {
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
         if (method.Entity is null || operationParameters.Count != 1)
+        {
+            return null;
+        }
+
+        var writeColumns = method.Entity.Properties.Where(static p => !p.IsKey || !p.IsDbGenerated).ToList();
+        var columnsSql = string.Join(", ", writeColumns.Select(p => Quote(dialect, p.ColumnName, caseSensitive)));
+        var valuesSql = string.Join(", ", writeColumns.Select(p => "@" + p.PropertyName));
+        var table = QualifiedTable(dialect, method.Entity, caseSensitive);
+
+        if (method.ReturnsIdentity)
+        {
+            if (method.Entity.KeyProperty is null)
+            {
+                return null;
+            }
+
+            var keyColumn = Quote(dialect, method.Entity.KeyProperty.ColumnName, caseSensitive);
+            return dialect switch
+            {
+                DatabaseDialect.PostgreSql => $"INSERT INTO {table} ({columnsSql}) VALUES ({valuesSql}) RETURNING {keyColumn};",
+                _ => $"INSERT INTO {table} ({columnsSql}) OUTPUT INSERTED.{keyColumn} VALUES ({valuesSql});",
+            };
+        }
+
+        return $"INSERT INTO {table} ({columnsSql}) VALUES ({valuesSql});";
+    }
+
+    private static void RenderInsert(RepositoryMethodModel method, StringBuilder sb, string? sqlConstName)
+    {
+        var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
+        if (method.Entity is null || operationParameters.Count != 1 || sqlConstName is null)
         {
             sb.AppendLine("        throw new NotSupportedException(\"Insert signature is invalid.\");");
             return;
@@ -1352,11 +1829,15 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var entityParameter = operationParameters[0].Name;
         sb.AppendLine($"        EnsureTransactionRequired(\"{method.Name}\");");
         sb.AppendLine("        var transaction = ResolveTransaction();");
-        var writeColumns = method.Entity.Properties.Where(static p => !p.IsKey || !p.IsDbGenerated).ToList();
-        var columnsSql = string.Join(", ", writeColumns.Select(p => Quote(dialect, p.ColumnName, caseSensitive)));
-        var valuesSql = string.Join(", ", writeColumns.Select(p => "@" + p.PropertyName));
-        var sql = $"INSERT INTO {QualifiedTable(dialect, method.Entity, caseSensitive)} ({columnsSql}) VALUES ({valuesSql});";
-        var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", {entityParameter}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
+
+        if (method.ReturnsIdentity && method.Entity.KeyProperty is not null)
+        {
+            sb.AppendLine($"        var rows = await _connection.QueryGeneratedAsync<{method.Entity.KeyProperty.TypeName}>(Sql.{sqlConstName}, {entityParameter}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+            sb.AppendLine("        return rows.FirstOrDefault();");
+            return;
+        }
+
+        var executeExpression = $"await _connection.ExecuteGeneratedAsync(Sql.{sqlConstName}, {entityParameter}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
 
         if (method.IsTaskWithoutResult)
         {
@@ -1368,10 +1849,23 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine($"        return {executeExpression};");
     }
 
-    private static void RenderUpdate(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect, bool caseSensitive)
+    private static string? BuildUpdateSql(RepositoryMethodModel method, DatabaseDialect dialect, bool caseSensitive)
     {
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
         if (method.Entity is null || method.Entity.KeyProperty is null || operationParameters.Count != 1)
+        {
+            return null;
+        }
+
+        var writeColumns = method.Entity.Properties.Where(static p => !p.IsKey).ToList();
+        var setSql = string.Join(", ", writeColumns.Select(p => $"{Quote(dialect, p.ColumnName, caseSensitive)} = @{p.PropertyName}"));
+        return $"UPDATE {QualifiedTable(dialect, method.Entity, caseSensitive)} SET {setSql} WHERE {Quote(dialect, method.Entity.KeyProperty.ColumnName, caseSensitive)} = @{method.Entity.KeyProperty.PropertyName};";
+    }
+
+    private static void RenderUpdate(RepositoryMethodModel method, StringBuilder sb, string? sqlConstName)
+    {
+        var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
+        if (method.Entity is null || method.Entity.KeyProperty is null || operationParameters.Count != 1 || sqlConstName is null)
         {
             sb.AppendLine("        throw new NotSupportedException(\"Update signature is invalid.\");");
             return;
@@ -1380,10 +1874,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var entityParameter = operationParameters[0].Name;
         sb.AppendLine($"        EnsureTransactionRequired(\"{method.Name}\");");
         sb.AppendLine("        var transaction = ResolveTransaction();");
-        var writeColumns = method.Entity.Properties.Where(static p => !p.IsKey).ToList();
-        var setSql = string.Join(", ", writeColumns.Select(p => $"{Quote(dialect, p.ColumnName, caseSensitive)} = @{p.PropertyName}"));
-        var sql = $"UPDATE {QualifiedTable(dialect, method.Entity, caseSensitive)} SET {setSql} WHERE {Quote(dialect, method.Entity.KeyProperty.ColumnName, caseSensitive)} = @{method.Entity.KeyProperty.PropertyName};";
-        var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", {entityParameter}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
+        var executeExpression = $"await _connection.ExecuteGeneratedAsync(Sql.{sqlConstName}, {entityParameter}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
 
         if (method.IsTaskWithoutResult)
         {
@@ -1395,35 +1886,72 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine($"        return {executeExpression};");
     }
 
-    private static void RenderDelete(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect, bool caseSensitive)
+    private static string BuildFilterWhereClause(RepositoryMethodModel method, DatabaseDialect dialect, bool caseSensitive)
+        => string.Join(" AND ", method.Filters.Select(f => $"{Quote(dialect, f.ColumnName, caseSensitive)} = @{f.ParameterName}"));
+
+    private static string BuildFilterParamExpression(RepositoryMethodModel method)
+        => "new { " + string.Join(", ", method.Filters.Select(static f => f.ParameterName)) + " }";
+
+    private static string? BuildDeleteSql(RepositoryMethodModel method, DatabaseDialect dialect, bool caseSensitive)
     {
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
-        if (operationParameters.Count == 0)
+        if (operationParameters.Count == 0 || method.Entity is null)
         {
-            sb.AppendLine("        throw new NotSupportedException(\"Delete signature is invalid.\");");
-            return;
-        }
-
-        if (method.Entity is null || method.Entity.KeyProperty is null)
-        {
-            sb.AppendLine("        throw new NotSupportedException(\"Delete signature is invalid.\");");
-            return;
+            return null;
         }
 
         var table = QualifiedTable(dialect, method.Entity, caseSensitive);
+
+        if (method.Filters.Count > 0)
+        {
+            return $"DELETE FROM {table} WHERE {BuildFilterWhereClause(method, dialect, caseSensitive)};";
+        }
+
+        if (method.Entity.KeyProperty is null)
+        {
+            return null;
+        }
+
         var keyColumn = method.Entity.KeyProperty.ColumnName;
         var paramName = operationParameters[0].Name;
         var isEntityParameter = string.Equals(
             TrimNullableSuffix(operationParameters[0].TypeName),
             TrimNullableSuffix(method.Entity.ClrTypeName),
             StringComparison.Ordinal);
+        var sqlParamName = isEntityParameter ? method.Entity.KeyProperty.PropertyName : paramName;
+        return $"DELETE FROM {table} WHERE {Quote(dialect, keyColumn, caseSensitive)} = @{sqlParamName};";
+    }
+
+    private static void RenderDelete(RepositoryMethodModel method, StringBuilder sb, string? sqlConstName)
+    {
+        var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
+        if (operationParameters.Count == 0
+            || method.Entity is null
+            || (method.Filters.Count == 0 && method.Entity.KeyProperty is null)
+            || sqlConstName is null)
+        {
+            sb.AppendLine("        throw new NotSupportedException(\"Delete signature is invalid.\");");
+            return;
+        }
+
+        string paramExpression;
+        if (method.Filters.Count > 0)
+        {
+            paramExpression = BuildFilterParamExpression(method);
+        }
+        else
+        {
+            var paramName = operationParameters[0].Name;
+            var isEntityParameter = string.Equals(
+                TrimNullableSuffix(operationParameters[0].TypeName),
+                TrimNullableSuffix(method.Entity.ClrTypeName),
+                StringComparison.Ordinal);
+            paramExpression = isEntityParameter ? paramName : $"new {{ {paramName} }}";
+        }
 
         sb.AppendLine($"        EnsureTransactionRequired(\"{method.Name}\");");
         sb.AppendLine("        var transaction = ResolveTransaction();");
-        var sqlParamName = isEntityParameter ? method.Entity.KeyProperty.PropertyName : paramName;
-        var paramExpression = isEntityParameter ? paramName : $"new {{ {paramName} }}";
-        var sql = $"DELETE FROM {table} WHERE {Quote(dialect, keyColumn, caseSensitive)} = @{sqlParamName};";
-        var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", {paramExpression}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
+        var executeExpression = $"await _connection.ExecuteGeneratedAsync(Sql.{sqlConstName}, {paramExpression}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
 
         if (method.IsTaskWithoutResult)
         {
@@ -1435,10 +1963,23 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine($"        return {executeExpression};");
     }
 
-    private static void RenderGetById(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect, bool caseSensitive)
+    private static string? BuildGetByIdSql(RepositoryMethodModel method, DatabaseDialect dialect, bool caseSensitive)
     {
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
         if (method.Entity is null || method.Entity.KeyProperty is null || operationParameters.Count == 0)
+        {
+            return null;
+        }
+
+        var keyParameter = operationParameters[0].Name;
+        var selectSql = BuildEntitySelect(method.Entity, dialect, caseSensitive);
+        return $"{selectSql} WHERE {Quote(dialect, method.Entity.KeyProperty.ColumnName, caseSensitive)} = @{keyParameter};";
+    }
+
+    private static void RenderGetById(RepositoryMethodModel method, StringBuilder sb, string? sqlConstName)
+    {
+        var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
+        if (method.Entity is null || method.Entity.KeyProperty is null || operationParameters.Count == 0 || sqlConstName is null)
         {
             sb.AppendLine("        throw new NotSupportedException(\"GetById signature is invalid.\");");
             return;
@@ -1446,51 +1987,160 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
         var keyParameter = operationParameters[0].Name;
         sb.AppendLine("        var transaction = ResolveTransaction();");
-        var selectSql = BuildEntitySelect(method.Entity, dialect, caseSensitive);
-        var sql = $"{selectSql} WHERE {Quote(dialect, method.Entity.KeyProperty.ColumnName, caseSensitive)} = @{keyParameter};";
-
-        sb.AppendLine($"        var rows = await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ {keyParameter} }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+        sb.AppendLine($"        var rows = await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(Sql.{sqlConstName}, new {{ {keyParameter} }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
         sb.AppendLine("        return rows.FirstOrDefault();");
     }
 
-    private static void RenderGetAll(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect, bool caseSensitive)
+    private static string? BuildGetAllSql(RepositoryMethodModel method, DatabaseDialect dialect, bool caseSensitive)
+        => method.Entity is null ? null : BuildEntitySelect(method.Entity, dialect, caseSensitive) + ";";
+
+    private static void RenderGetAll(RepositoryMethodModel method, StringBuilder sb, string? sqlConstName)
     {
-        if (method.Entity is null)
+        if (method.Entity is null || sqlConstName is null)
         {
             sb.AppendLine("        throw new NotSupportedException(\"GetAll signature is invalid.\");");
             return;
         }
 
-        var sql = BuildEntitySelect(method.Entity, dialect, caseSensitive) + ";";
-
         sb.AppendLine("        var transaction = ResolveTransaction();");
-        sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", transaction: transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+        sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(Sql.{sqlConstName}, transaction: transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
     }
 
-    private static void RenderGetPage(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect, bool caseSensitive)
+    private static string? BuildGetPageSql(RepositoryMethodModel method, DatabaseDialect dialect, bool caseSensitive)
     {
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
-        if (method.Entity is null || operationParameters.Count != 2)
+        if (method.Entity is null
+            || !TryResolveGetPageParameters(operationParameters, out var skipParameter, out var takeParameter))
         {
-            sb.AppendLine("        throw new NotSupportedException(\"GetPage signature is invalid.\");");
-            return;
+            return null;
         }
 
-        var skipParameter = operationParameters[0].Name;
-        var takeParameter = operationParameters[1].Name;
-        var orderBy = method.Entity.KeyProperty?.ColumnName ?? method.Entity.Properties.FirstOrDefault()?.ColumnName ?? "Id";
-        var orderBySql = $"{BuildEntitySelect(method.Entity, dialect, caseSensitive)} ORDER BY {Quote(dialect, orderBy, caseSensitive)}";
-        var sql = dialect switch
+        var orderByColumn = method.QueryMetadata.OrderByExpression
+            ?? method.Entity.KeyProperty?.ColumnName
+            ?? method.Entity.Properties.FirstOrDefault()?.ColumnName;
+        if (orderByColumn is null)
+        {
+            return null;
+        }
+
+        var orderBySql = $"{BuildEntitySelect(method.Entity, dialect, caseSensitive)} ORDER BY {Quote(dialect, orderByColumn, caseSensitive)} {ToSql(method.QueryMetadata.OrderByDirection)}";
+        var pageSql = dialect switch
         {
             DatabaseDialect.PostgreSql => $"{orderBySql} LIMIT @{takeParameter} OFFSET @{skipParameter};",
             _ => $"{orderBySql} OFFSET @{skipParameter} ROWS FETCH NEXT @{takeParameter} ROWS ONLY;",
         };
 
-        sb.AppendLine("        var transaction = ResolveTransaction();");
-        sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ {skipParameter}, {takeParameter} }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+        if (method.ReturnsPagedResult)
+        {
+            var table = QualifiedTable(dialect, method.Entity, caseSensitive);
+            return $"{pageSql} SELECT {CountExpression(dialect)} FROM {table};";
+        }
+
+        return pageSql;
     }
 
-    private static void RenderQuery(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect, bool caseSensitive)
+    private static string CountExpression(DatabaseDialect dialect)
+        => dialect == DatabaseDialect.PostgreSql ? "COUNT(*)" : "COUNT_BIG(*)";
+
+    private static void RenderGetPage(RepositoryMethodModel method, StringBuilder sb, string? sqlConstName)
+    {
+        var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
+        if (method.Entity is null
+            || !TryResolveGetPageParameters(operationParameters, out var skipParameter, out var takeParameter)
+            || sqlConstName is null)
+        {
+            sb.AppendLine("        throw new NotSupportedException(\"GetPage signature is invalid.\");");
+            return;
+        }
+
+        sb.AppendLine("        var transaction = ResolveTransaction();");
+
+        if (method.ReturnsPagedResult)
+        {
+            sb.AppendLine($"        return await _connection.QueryPagedGeneratedAsync<{method.ElementTypeName}>(Sql.{sqlConstName}, new {{ {skipParameter}, {takeParameter} }}, {skipParameter}, {takeParameter}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+            return;
+        }
+
+        sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(Sql.{sqlConstName}, new {{ {skipParameter}, {takeParameter} }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+    }
+
+    private static string? BuildGetBySql(RepositoryMethodModel method, DatabaseDialect dialect, bool caseSensitive)
+    {
+        if (method.Entity is null || method.Filters.Count == 0)
+        {
+            return null;
+        }
+
+        return $"{BuildEntitySelect(method.Entity, dialect, caseSensitive)} WHERE {BuildFilterWhereClause(method, dialect, caseSensitive)};";
+    }
+
+    private static void RenderGetBy(RepositoryMethodModel method, StringBuilder sb, string? sqlConstName)
+    {
+        if (method.Entity is null || method.Filters.Count == 0 || sqlConstName is null)
+        {
+            sb.AppendLine("        throw new NotSupportedException(\"GetBy signature is invalid.\");");
+            return;
+        }
+
+        sb.AppendLine("        var transaction = ResolveTransaction();");
+
+        if (method.ReturnsEnumerable)
+        {
+            sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(Sql.{sqlConstName}, {BuildFilterParamExpression(method)}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+            return;
+        }
+
+        sb.AppendLine($"        var rows = await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(Sql.{sqlConstName}, {BuildFilterParamExpression(method)}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+        sb.AppendLine("        return rows.FirstOrDefault();");
+    }
+
+    private static string? BuildCountSql(RepositoryMethodModel method, DatabaseDialect dialect, bool caseSensitive)
+    {
+        if (method.Entity is null)
+        {
+            return null;
+        }
+
+        var table = QualifiedTable(dialect, method.Entity, caseSensitive);
+        var whereSql = method.Filters.Count == 0
+            ? string.Empty
+            : $" WHERE {BuildFilterWhereClause(method, dialect, caseSensitive)}";
+        return $"SELECT {CountExpression(dialect)} FROM {table}{whereSql};";
+    }
+
+    private static void RenderCount(RepositoryMethodModel method, StringBuilder sb, string? sqlConstName)
+    {
+        if (method.Entity is null || sqlConstName is null)
+        {
+            sb.AppendLine("        throw new NotSupportedException(\"Count signature is invalid.\");");
+            return;
+        }
+
+        var paramExpression = method.Filters.Count == 0 ? "null" : BuildFilterParamExpression(method);
+        sb.AppendLine("        var transaction = ResolveTransaction();");
+        sb.AppendLine($"        var rows = await _connection.QueryGeneratedAsync<long>(Sql.{sqlConstName}, {paramExpression}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+
+        // A null element type means the method returns Task<int>; otherwise it returns Task<long>.
+        sb.AppendLine(method.ElementTypeName is null
+            ? "        return (int)rows.FirstOrDefault();"
+            : "        return rows.FirstOrDefault();");
+    }
+
+    private static void RenderExists(RepositoryMethodModel method, StringBuilder sb, string? sqlConstName)
+    {
+        if (method.Entity is null || sqlConstName is null)
+        {
+            sb.AppendLine("        throw new NotSupportedException(\"Exists signature is invalid.\");");
+            return;
+        }
+
+        var paramExpression = method.Filters.Count == 0 ? "null" : BuildFilterParamExpression(method);
+        sb.AppendLine("        var transaction = ResolveTransaction();");
+        sb.AppendLine($"        var rows = await _connection.QueryGeneratedAsync<long>(Sql.{sqlConstName}, {paramExpression}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+        sb.AppendLine("        return rows.FirstOrDefault() > 0;");
+    }
+
+    private static string? BuildQuerySql(RepositoryMethodModel method, DatabaseDialect dialect, bool caseSensitive)
     {
         var entity = method.Entity;
         var from = method.QueryMetadata.From;
@@ -1519,7 +2169,16 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var orderBySql = method.QueryMetadata.OrderByExpression is null
             ? string.Empty
             : $" ORDER BY {FinalizeQueryExpression(method.QueryMetadata.OrderByExpression, dialect, caseSensitive)} {ToSql(method.QueryMetadata.OrderByDirection)}";
-        var sql = $"SELECT {selectColumns} FROM {from} {baseAlias}{joinSql}{whereSql}{orderBySql};";
+        return $"SELECT {selectColumns} FROM {from} {baseAlias}{joinSql}{whereSql}{orderBySql};";
+    }
+
+    private static void RenderQuery(RepositoryMethodModel method, StringBuilder sb, string? sqlConstName)
+    {
+        if (sqlConstName is null)
+        {
+            sb.AppendLine("        throw new NotSupportedException(\"Query signature is invalid.\");");
+            return;
+        }
 
         var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
         var anonymousParam = operationParameters.Count == 0
@@ -1527,13 +2186,19 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             : "new { " + string.Join(", ", operationParameters.Select(static p => p.Name)) + " }";
 
         sb.AppendLine("        var transaction = ResolveTransaction();");
-        sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", {anonymousParam}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+        sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(Sql.{sqlConstName}, {anonymousParam}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
     }
 
-    private static void RenderStoredProcedure(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect, bool caseSensitive)
+    private static string? BuildStoredProcedureSql(RepositoryMethodModel method, DatabaseDialect dialect, bool caseSensitive)
+        => ResolveStoredProcedureName(dialect, method.QueryMetadata.StoredProcedure, caseSensitive);
+
+    private static void RenderStoredProcedure(RepositoryMethodModel method, StringBuilder sb, string? sqlConstName)
     {
-        var storedProcedure = method.QueryMetadata.StoredProcedure;
-        var procedureName = ResolveStoredProcedureName(dialect, storedProcedure, caseSensitive);
+        if (sqlConstName is null)
+        {
+            sb.AppendLine("        throw new NotSupportedException(\"Stored procedure signature is invalid.\");");
+            return;
+        }
 
         sb.AppendLine($"        EnsureTransactionRequired(\"{method.Name}\");");
         sb.AppendLine("        var transaction = ResolveTransaction();");
@@ -1568,7 +2233,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             .Select(static p => $"\"{p.ParameterName}\"")
             .ToList();
 
-        sb.AppendLine($"        var result = await _connection.QueryStoredProcedureGeneratedAsync<{method.ElementTypeName ?? "dynamic"}>(\"{EscapeSql(procedureName)}\", dynamicParameters, new[] {{ {string.Join(", ", outputNames)} }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+        sb.AppendLine($"        var result = await _connection.QueryStoredProcedureGeneratedAsync<{method.ElementTypeName ?? "dynamic"}>(Sql.{sqlConstName}, dynamicParameters, new[] {{ {string.Join(", ", outputNames)} }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
 
         if (method.ReturnsProcedureResult)
         {
@@ -2308,13 +2973,20 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         bool IsAsync,
         bool ReturnsEnumerable,
         bool ReturnsProcedureResult,
+        bool ReturnsPagedResult,
         bool IsTaskWithoutResult,
         string? ElementTypeName,
         RepositoryOperationKind OperationKind,
         IReadOnlyList<MethodParameterModel> Parameters,
         string CancellationTokenParameterName,
         EntityModel? Entity,
-        QueryMetadata QueryMetadata);
+        QueryMetadata QueryMetadata,
+        IReadOnlyList<ConventionFilterModel> Filters,
+        bool ReturnsIdentity);
+
+    private sealed record ConventionFilterModel(
+        string ColumnName,
+        string ParameterName);
 
     private sealed record MethodParameterModel(
         string Name,
@@ -2375,6 +3047,12 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         string? Schema,
         bool IsSchemaExplicit);
 
+    private sealed record SqlConstantEntry(
+        int MethodIndex,
+        string MethodName,
+        string ConstName,
+        string Sql);
+
     private sealed record DbParamAttributeModel(DbParamDirectionModel Direction, System.Data.DbType? DbType, int? Size);
 
     private enum DbParamDirectionModel
@@ -2399,6 +3077,9 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         GetById,
         GetAll,
         GetPage,
+        GetBy,
+        Count,
+        Exists,
         Query,
         StoredProcedure,
     }
@@ -2415,7 +3096,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         bool IsTaskWithoutResult,
         bool ReturnsEnumerable,
         bool IsProcedureResult,
-        ITypeSymbol? ElementType)
+        ITypeSymbol? ElementType,
+        bool IsPagedResult = false)
     {
         public static MethodShape FromReturnType(ITypeSymbol returnType)
         {
@@ -2447,6 +3129,14 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 && IsInNamespace(procedureResult, "DreamBig.SourceGen.Dapper.Internal"))
             {
                 return new MethodShape(true, false, false, false, true, procedureResult.TypeArguments[0]);
+            }
+
+            if (returnType is INamedTypeSymbol pagedResult
+                && pagedResult.IsGenericType
+                && pagedResult.Name == "PagedResult"
+                && IsInNamespace(pagedResult, "DreamBig.SourceGen.Dapper.Internal"))
+            {
+                return new MethodShape(true, false, false, false, false, pagedResult.TypeArguments[0], IsPagedResult: true);
             }
 
             if (returnType.SpecialType is SpecialType.System_Int32)

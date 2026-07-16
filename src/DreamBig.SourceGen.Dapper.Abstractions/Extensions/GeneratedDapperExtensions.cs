@@ -151,6 +151,45 @@ public static class GeneratedDapperExtensions
     }
 
     /// <summary>
+    /// Executes a generated page query followed by a count query and wraps both results.
+    /// </summary>
+    /// <typeparam name="T">Row type.</typeparam>
+    /// <param name="connection">Database connection.</param>
+    /// <param name="sql">Combined page and count SQL statements.</param>
+    /// <param name="param">SQL parameters.</param>
+    /// <param name="skip">Number of rows skipped before this page.</param>
+    /// <param name="take">Requested page size.</param>
+    /// <param name="transaction">Optional transaction.</param>
+    /// <param name="commandTimeout">Optional timeout.</param>
+    /// <param name="cancellationToken">Command cancellation token.</param>
+    /// <returns>Page rows and total count.</returns>
+    public static async Task<PagedResult<T>> QueryPagedGeneratedAsync<T>(
+        this IDbConnection connection,
+        string sql,
+        object? param,
+        int skip,
+        int take,
+        IDbTransaction? transaction = null,
+        int? commandTimeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+
+        var command = new CommandDefinition(
+            sql,
+            param,
+            transaction,
+            commandTimeout,
+            cancellationToken: cancellationToken);
+
+        using var grid = await connection.QueryMultipleAsync(command).ConfigureAwait(false);
+        var items = (await grid.ReadAsync<T>().ConfigureAwait(false)).ToList();
+        var totalCount = await grid.ReadFirstAsync<long>().ConfigureAwait(false);
+
+        return new PagedResult<T>(items, totalCount, skip, take);
+    }
+
+    /// <summary>
     /// Executes a stored procedure and captures output parameters.
     /// </summary>
     /// <typeparam name="T">Result row type.</typeparam>

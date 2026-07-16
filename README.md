@@ -108,16 +108,93 @@ Both provider packages also expose overloads for raw connection strings and cust
 ### Repository Conventions
 
 - `[DbRepository]` marks an interface for generation.
-- Repository methods are classified by name unless they use `[DbQuery]` or `[DbStoredProcedure]`.
+- Repository methods are classified by name unless they use `[DbQuery]`, `[DbStoredProcedure]`, or `[DbOperation]`.
 - Supported CRUD-style prefixes are:
   - `Insert*`
   - `Update*`
   - `Delete*`
-  - `GetById*`
+  - `GetById*` (natural `Get{Entity}ById` naming also works)
   - `GetAll*`
   - `GetPage*`
+  - `Count*`
+  - `Exists*`
 - Repository methods must return `Task` or `Task<T>`.
 - Every repository method must include a `CancellationToken` parameter.
+
+### Filtered Conventions
+
+`By{Property}` clauses generate typed `WHERE` filters. Chain multiple properties with `And`; parameters bind to properties positionally:
+
+```csharp
+Task<Customer?> GetCustomerByEmail(string email, CancellationToken ct);
+Task<IEnumerable<Customer>> GetCustomersByEmailAndIsActive(string email, bool isActive, CancellationToken ct);
+Task<int> DeleteCustomerByEmail(string email, CancellationToken ct);
+Task<int> CountCustomersByIsActive(bool isActive, CancellationToken ct);      // Task<int> or Task<long>
+Task<bool> ExistsCustomerByEmail(string email, CancellationToken ct);
+```
+
+Property names are validated against the entity at compile time (diagnostic `DBSGD027`). `Count*` and `Exists*` resolve the entity from the method name (`CountCustomers` -> `Customer`) or from `[DbOperation(Entity = ...)]`.
+
+### Explicit Operations
+
+`[DbOperation]` overrides name conventions entirely, so methods can be named freely:
+
+```csharp
+[DbOperation(DbOperationKind.GetById)]
+Task<Customer?> Find(int id, CancellationToken ct);
+
+[DbOperation(DbOperationKind.Count, Entity = typeof(Customer))]
+Task<int> HowMany(CancellationToken ct);
+```
+
+When no `By` clause is present, filter properties for `GetBy`, `Count`, and `Exists` operations are inferred from parameter names.
+
+### Insert Returning Identity
+
+Set `ReturnIdentity = true` to return the database-generated key instead of the affected row count (`OUTPUT INSERTED` on SQL Server, `RETURNING` on PostgreSQL):
+
+```csharp
+[DbOperation(DbOperationKind.Insert, ReturnIdentity = true)]
+Task<int> InsertCustomer(Customer entity, CancellationToken ct);
+```
+
+### Paging
+
+`GetPage*` methods take two parameters that are bound by name, not position:
+
+- The skip parameter must be named `skip` or `offset`.
+- The take parameter must be named `take`, `limit`, `pageSize`, or `fetch`.
+
+Parameter order does not matter. Unrecognized names produce diagnostic `DBSGD025` instead of silently guessing.
+
+By default pages are ordered by the entity key. To order by another property, add `[DbQuery]` with only ordering members:
+
+```csharp
+[DbQuery(OrderBy = "Name", OrderByDirection = OrderByDirection.Desc)]
+Task<IEnumerable<Customer>> GetPageCustomers(int skip, int take, CancellationToken cancellationToken);
+```
+
+`OrderBy` takes a CLR property name on the entity; unknown names produce diagnostic `DBSGD016`.
+
+Return `PagedResult<T>` instead of `IEnumerable<T>` to get the total row count alongside the page in a single round trip:
+
+```csharp
+Task<PagedResult<Customer>> GetPageCustomers(int skip, int take, CancellationToken ct);
+
+var page = await repository.GetPageCustomers(20, 10, ct);
+// page.Items, page.TotalCount, page.Skip, page.Take
+```
+
+### Generated SQL Constants
+
+Every generated repository exposes the exact SQL it executes as constants in a nested `Sql` class:
+
+```csharp
+Console.WriteLine(CustomerRepositoryGenerated.Sql.InsertCustomer);
+// INSERT INTO [dbo].[Customers] ([full_name], [Email]) VALUES (@Name, @Email);
+```
+
+Use these to review generated SQL, log it, or assert on it in your own tests. For stored procedure methods the constant holds the resolved procedure name.
 
 ### Entity Mapping
 
@@ -143,6 +220,7 @@ The method name should still mirror the entity name closely. If the convention i
 - `[DbJoin]` adds typed join definitions and can be repeated to chain joins.
 - `Where`, `On`, and `OrderBy` support `alias.Property` syntax.
 - Bare property names only work when they are unique across the joined tables.
+- Every `@parameter` referenced in a query string must match a method parameter name; unknown references produce diagnostic `DBSGD026` at compile time.
 - `JoinColumnA` and `JoinColumnB` must match CLR property names on the joined entities.
 - For PostgreSQL, `DbRepository(CaseSensitive = false)` emits unquoted identifiers for consumers who want unquoted SQL.
 
@@ -172,10 +250,12 @@ The method name should still mirror the entity name closely. If the convention i
 | `[DbJoin]` | Declares typed joins for a query method |
 | `[DbStoredProcedure]` | Declares a stored procedure call |
 | `[DbParam]` | Declares stored procedure parameter metadata |
+| `[DbOperation]` | Declares the operation explicitly, overriding name conventions |
 | `AddDreamBigDapperSqlServer(...)` | Registers SQL Server connection and DI support |
 | `AddDreamBigDapperPostgreSql(...)` | Registers PostgreSQL connection and DI support |
 | `AddDreamBigDapperGenerated()` | Registers generated repositories and Unit of Work types |
 | `GeneratedProcedureResult<T>` | Wraps rows and output parameter values from a stored procedure |
+| `PagedResult<T>` | Wraps one page of rows plus the total row count |
 
 ## Examples
 
@@ -291,10 +371,14 @@ catch
 | `DBSGD011` | Repository generation failed | Fix the repository diagnostics first |
 | `DBSGD012` | Duplicate Unit of Work property names | Rename one of the properties |
 | `DBSGD015` | Join column is invalid | Use a CLR property name that exists on the joined entity |
+| `DBSGD016` | OrderBy column is invalid | Use a CLR property name that exists on the entity |
 | `DBSGD018` | Query reference is ambiguous | Qualify the column with an alias |
 | `DBSGD019` | Join alias is duplicated | Provide unique aliases |
 | `DBSGD020` | Join source alias is invalid | Make sure the alias was introduced by an earlier join |
 | `DBSGD021` | Multiple `ORDER BY` clauses were configured | Keep only one `ORDER BY` source |
+| `DBSGD025` | GetPage parameters cannot be identified | Name the parameters `skip`/`offset` and `take`/`limit`/`pageSize`/`fetch` |
+| `DBSGD026` | Query references an unknown SQL parameter | Fix the `@parameter` name to match a method parameter |
+| `DBSGD027` | Convention property is invalid | Use a CLR property name that exists on the entity in the `By` clause |
 
 ## Known Limitations
 

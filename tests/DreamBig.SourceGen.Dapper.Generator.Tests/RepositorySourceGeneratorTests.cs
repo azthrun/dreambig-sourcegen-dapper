@@ -936,8 +936,8 @@ public interface ICustomerRepository
             Environment.NewLine,
             result.GeneratedTrees.Select(static t => t.GetText().ToString()));
 
-        generated.ShouldContain("DELETE FROM [dbo].[Customers] WHERE [Id] = @Id");
-        generated.ShouldContain("ExecuteGeneratedAsync(\"DELETE FROM [dbo].[Customers] WHERE [Id] = @Id;\", entity, transaction");
+        generated.ShouldContain("public const string DeleteAsync = \"DELETE FROM [dbo].[Customers] WHERE [Id] = @Id;\";");
+        generated.ShouldContain("ExecuteGeneratedAsync(Sql.DeleteAsync, entity, transaction");
     }
 
     [Fact]
@@ -1128,6 +1128,592 @@ public interface ICustomerRepository
 
         var result = RunGenerator(source);
         result.Diagnostics.Any(d => d.Id == "DBSGD024" && d.Severity == DiagnosticSeverity.Warning).ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ShouldBindGetPageParametersByNameRegardlessOfOrder()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<IEnumerable<Customer>> GetPageCustomers(int take, int skip, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY");
+    }
+
+    [Fact]
+    public void ShouldReportDiagnosticWhenGetPageParameterNamesAreUnrecognized()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<IEnumerable<Customer>> GetPageCustomers(int first, int second, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD025" && d.Severity == DiagnosticSeverity.Error).ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ShouldHonorOrderByOnGetPage()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    [DbColumn("full_name")]
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    [DbQuery(OrderBy = "Name", OrderByDirection = OrderByDirection.Desc)]
+    Task<IEnumerable<Customer>> GetPageCustomers(int skip, int take, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("ORDER BY [full_name] DESC OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY");
+    }
+
+    [Fact]
+    public void ShouldReportDiagnosticWhenGetPageOrderByColumnIsUnknown()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    [DbQuery(OrderBy = "MissingColumn")]
+    Task<IEnumerable<Customer>> GetPageCustomers(int skip, int take, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD016" && d.Severity == DiagnosticSeverity.Error).ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ShouldEmitSqlConstantsForGeneratedMethods()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers", Schema = "dbo")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<int> InsertCustomer(Customer entity, CancellationToken cancellationToken);
+    Task<Customer?> GetByIdCustomer(int id, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("public static class Sql");
+        generated.ShouldContain("public const string InsertCustomer = \"INSERT INTO [dbo].[Customers] ([Name]) VALUES (@Name);\";");
+        generated.ShouldContain("public const string GetByIdCustomer = \"SELECT [Id] AS [Id], [Name] AS [Name] FROM [dbo].[Customers] WHERE [Id] = @id;\";");
+        generated.ShouldContain("ExecuteGeneratedAsync(Sql.InsertCustomer, entity, transaction");
+        generated.ShouldContain("QueryGeneratedAsync<global::Demo.Customer?>(Sql.GetByIdCustomer, new { id }, transaction");
+    }
+
+    [Fact]
+    public void ShouldReportDiagnosticForUnknownQueryParameter()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public bool IsActive { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    [DbQuery(From = "Customers", Where = "IsActive = @isActiv")]
+    Task<IEnumerable<Customer>> QueryActive(bool isActive, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD026" && d.Severity == DiagnosticSeverity.Error).ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ShouldNotReportKnownQueryParametersOrLiteralAtSigns()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Email { get; set; } = string.Empty;
+
+    public bool IsActive { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    [DbQuery(From = "Customers", Where = "IsActive = @isActive AND Email <> 'admin@example.com'")]
+    Task<IEnumerable<Customer>> QueryActive(bool isActive, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public void ShouldSupportNaturalGetByIdNaming()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<Customer?> GetCustomerById(int id, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("SELECT [Id] AS [Id], [Name] AS [Name] FROM [dbo].[Customers] WHERE [Id] = @id;");
+        generated.ShouldContain("return rows.FirstOrDefault();");
+    }
+
+    [Fact]
+    public void ShouldSupportExplicitOperationAttribute()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    [DbOperation(DbOperationKind.GetById)]
+    Task<Customer?> Find(int id, CancellationToken cancellationToken);
+
+    [DbOperation(DbOperationKind.Count, Entity = typeof(Customer))]
+    Task<int> HowMany(CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("public const string Find = \"SELECT [Id] AS [Id], [Name] AS [Name] FROM [dbo].[Customers] WHERE [Id] = @id;\";");
+        generated.ShouldContain("public const string HowMany = \"SELECT COUNT_BIG(*) FROM [dbo].[Customers];\";");
+        generated.ShouldContain("return (int)rows.FirstOrDefault();");
+    }
+
+    [Fact]
+    public void ShouldGenerateGetByPropertyConventions()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    [DbColumn("email_address")]
+    public string Email { get; set; } = string.Empty;
+
+    public bool IsActive { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<Customer?> GetCustomerByEmail(string email, CancellationToken cancellationToken);
+    Task<IEnumerable<Customer>> GetCustomersByEmailAndIsActive(string email, bool isActive, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("WHERE [email_address] = @email;");
+        generated.ShouldContain("WHERE [email_address] = @email AND [IsActive] = @isActive;");
+        generated.ShouldContain("new { email, isActive }");
+    }
+
+    [Fact]
+    public void ShouldGenerateDeleteByPropertyConvention()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Email { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<int> DeleteCustomerByEmail(string email, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("DELETE FROM [dbo].[Customers] WHERE [Email] = @email;");
+    }
+
+    [Fact]
+    public void ShouldGenerateCountAndExistsConventions()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public bool IsActive { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<int> CountCustomers(CancellationToken cancellationToken);
+    Task<long> CountCustomersByIsActive(bool isActive, CancellationToken cancellationToken);
+    Task<bool> ExistsCustomerByIsActive(bool isActive, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("public const string CountCustomers = \"SELECT COUNT_BIG(*) FROM [dbo].[Customers];\";");
+        generated.ShouldContain("SELECT COUNT_BIG(*) FROM [dbo].[Customers] WHERE [IsActive] = @isActive;");
+        generated.ShouldContain("return (int)rows.FirstOrDefault();");
+        generated.ShouldContain("return rows.FirstOrDefault() > 0;");
+    }
+
+    [Fact]
+    public void ShouldReportDiagnosticForUnknownConventionProperty()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<Customer?> GetCustomerByMissing(string missing, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD027" && d.Severity == DiagnosticSeverity.Error).ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ShouldGenerateInsertReturningIdentity()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    [DbOperation(DbOperationKind.Insert, ReturnIdentity = true)]
+    Task<int> InsertCustomer(Customer entity, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("INSERT INTO [dbo].[Customers] ([Name]) OUTPUT INSERTED.[Id] VALUES (@Name);");
+        generated.ShouldContain("QueryGeneratedAsync<int>(Sql.InsertCustomer, entity, transaction");
+        generated.ShouldContain("return rows.FirstOrDefault();");
+    }
+
+    [Fact]
+    public void ShouldGenerateInsertReturningIdentityForPostgreSql()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    [DbOperation(DbOperationKind.Insert, ReturnIdentity = true)]
+    Task<int> InsertCustomer(Customer entity, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source, "PostgreSql");
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("VALUES (@Name) RETURNING \\\"Id\\\";");
+    }
+
+    [Fact]
+    public void ShouldGeneratePagedResultWithTotalCount()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+using DreamBig.SourceGen.Dapper.Internal;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<PagedResult<Customer>> GetPageCustomers(int skip, int take, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY; SELECT COUNT_BIG(*) FROM [dbo].[Customers];");
+        generated.ShouldContain("QueryPagedGeneratedAsync<global::Demo.Customer>(Sql.GetPageCustomers, new { skip, take }, skip, take, transaction");
     }
 
     private static GeneratorResult RunGenerator(string source, string? dialect = null)

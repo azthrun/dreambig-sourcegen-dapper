@@ -188,6 +188,30 @@ internal static class DiagnosticDescriptors
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true);
 
+    public static readonly DiagnosticDescriptor GetPageParametersUnrecognized = new(
+        id: "DBSGD025",
+        title: "GetPage parameters cannot be identified",
+        messageFormat: "GetPage method '{0}' must name one parameter 'skip' (or 'offset') and the other 'take' (or 'limit', 'pageSize', 'fetch') so paging arguments are bound by name instead of position.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor QueryParameterUnknown = new(
+        id: "DBSGD026",
+        title: "Query references an unknown SQL parameter",
+        messageFormat: "Method '{0}' references SQL parameter '@{1}' that does not match any method parameter.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor ConventionPropertyInvalid = new(
+        id: "DBSGD027",
+        title: "Convention property is invalid",
+        messageFormat: "Method '{0}' references property '{1}' that does not exist on entity '{2}'.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
     public static readonly DiagnosticDescriptor UnitOfWorkDuplicateProperty = new(
         id: "DBSGD012",
         title: "Unit of Work contains duplicate repository property names",
