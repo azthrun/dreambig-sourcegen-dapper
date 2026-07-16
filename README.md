@@ -39,9 +39,9 @@ or:
 
 ## Runtime Support
 
-This release targets `net10.0` only.
+The runtime packages target `net8.0` and `net10.0`, so any application on .NET 8 or later can use them.
 
-If your application is on an earlier target, that is currently the main adoption limit to be aware of before you invest in the attribute model.
+The source generator itself targets `netstandard2.0`, as required by the Roslyn analyzer host.
 
 ## Quick Start
 
