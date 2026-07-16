@@ -151,6 +151,52 @@ public static class GeneratedDapperExtensions
     }
 
     /// <summary>
+    /// Executes a generated query without buffering and streams rows as they arrive.
+    /// </summary>
+    /// <typeparam name="T">Row type.</typeparam>
+    /// <param name="connection">Database connection. Must derive from <see cref="System.Data.Common.DbConnection"/>.</param>
+    /// <param name="sql">SQL query.</param>
+    /// <param name="param">SQL parameters.</param>
+    /// <param name="transaction">Optional transaction.</param>
+    /// <param name="commandTimeout">Optional timeout.</param>
+    /// <param name="cancellationToken">Enumeration cancellation token.</param>
+    /// <returns>Streamed result rows.</returns>
+    public static IAsyncEnumerable<T> QueryStreamGenerated<T>(
+        this IDbConnection connection,
+        string sql,
+        object? param = null,
+        IDbTransaction? transaction = null,
+        int? commandTimeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+
+        if (connection is not System.Data.Common.DbConnection dbConnection)
+        {
+            throw new NotSupportedException("Streaming queries require a System.Data.Common.DbConnection-based connection.");
+        }
+
+        return Stream(dbConnection, sql, param, transaction as System.Data.Common.DbTransaction, commandTimeout, cancellationToken);
+
+        static async IAsyncEnumerable<T> Stream(
+            System.Data.Common.DbConnection dbConnection,
+            string sql,
+            object? param,
+            System.Data.Common.DbTransaction? transaction,
+            int? commandTimeout,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await foreach (var row in dbConnection
+                .QueryUnbufferedAsync<T>(sql, param, transaction, commandTimeout)
+                .WithCancellation(cancellationToken)
+                .ConfigureAwait(false))
+            {
+                yield return row;
+            }
+        }
+    }
+
+    /// <summary>
     /// Executes a generated page query followed by a count query and wraps both results.
     /// </summary>
     /// <typeparam name="T">Row type.</typeparam>

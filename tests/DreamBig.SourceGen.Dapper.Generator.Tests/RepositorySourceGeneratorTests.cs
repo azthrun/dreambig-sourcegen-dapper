@@ -1716,6 +1716,242 @@ public interface ICustomerRepository
         generated.ShouldContain("QueryPagedGeneratedAsync<global::Demo.Customer>(Sql.GetPageCustomers, new { skip, take }, skip, take, transaction");
     }
 
+    [Fact]
+    public void ShouldApplyRowVersionToWrites()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+
+    [DbRowVersion]
+    [DbColumn("row_version")]
+    public byte[] Version { get; set; } = System.Array.Empty<byte>();
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<int> InsertCustomer(Customer entity, CancellationToken cancellationToken);
+    Task<int> UpdateCustomer(Customer entity, CancellationToken cancellationToken);
+    Task<int> DeleteCustomer(Customer entity, CancellationToken cancellationToken);
+    Task<int> DeleteCustomerById(int id, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("INSERT INTO [dbo].[Customers] ([Name]) VALUES (@Name);");
+        generated.ShouldContain("UPDATE [dbo].[Customers] SET [Name] = @Name WHERE [Id] = @Id AND [row_version] = @Version;");
+        generated.ShouldContain("public const string DeleteCustomer = \"DELETE FROM [dbo].[Customers] WHERE [Id] = @Id AND [row_version] = @Version;\";");
+        generated.ShouldContain("public const string DeleteCustomerById = \"DELETE FROM [dbo].[Customers] WHERE [Id] = @id;\";");
+    }
+
+    [Fact]
+    public void ShouldGenerateBatchInsertFromEnumerableParameter()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<int> InsertCustomers(IEnumerable<Customer> entities, CancellationToken cancellationToken);
+    Task<int> UpdateCustomers(IReadOnlyList<Customer> entities, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("INSERT INTO [dbo].[Customers] ([Name]) VALUES (@Name);");
+        generated.ShouldContain("ExecuteGeneratedAsync(Sql.InsertCustomers, entities, transaction");
+        generated.ShouldContain("UPDATE [dbo].[Customers] SET [Name] = @Name WHERE [Id] = @Id;");
+        generated.ShouldContain("ExecuteGeneratedAsync(Sql.UpdateCustomers, entities, transaction");
+    }
+
+    [Fact]
+    public void ShouldGenerateInClauseForEnumerableFilterParameters()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<int> DeleteCustomersByIds(IEnumerable<int> ids, CancellationToken cancellationToken);
+    Task<IEnumerable<Customer>> GetCustomersByIds(IReadOnlyList<int> ids, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("DELETE FROM [dbo].[Customers] WHERE [Id] IN @ids;");
+        generated.ShouldContain("FROM [dbo].[Customers] WHERE [Id] IN @ids;");
+    }
+
+    [Fact]
+    public void ShouldReportWarningForUnusedQueryParameter()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public bool IsActive { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    [DbQuery(From = "Customers", Where = "IsActive = @isActive")]
+    Task<IEnumerable<Customer>> QueryActive(bool isActive, string unusedFilter, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD028"
+            && d.Severity == DiagnosticSeverity.Warning
+            && d.GetMessage().Contains("unusedFilter")).ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ShouldGenerateAsyncStreamMethods()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Email { get; set; } = string.Empty;
+
+    public bool IsActive { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    IAsyncEnumerable<Customer> GetAllCustomers(CancellationToken cancellationToken);
+    IAsyncEnumerable<Customer> GetCustomersByEmail(string email, CancellationToken cancellationToken);
+
+    [DbQuery(From = "Customers", Where = "IsActive = @isActive")]
+    IAsyncEnumerable<Customer> QueryActive(bool isActive, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("public global::System.Collections.Generic.IAsyncEnumerable<global::Demo.Customer> GetAllCustomers(");
+        generated.ShouldNotContain("public async global::System.Collections.Generic.IAsyncEnumerable");
+        generated.ShouldContain("return _connection.QueryStreamGenerated<global::Demo.Customer>(Sql.GetAllCustomers, transaction: transaction, cancellationToken: cancellationToken);");
+        generated.ShouldContain("return _connection.QueryStreamGenerated<global::Demo.Customer>(Sql.GetCustomersByEmail, new { email }, transaction, cancellationToken: cancellationToken);");
+        generated.ShouldContain("return _connection.QueryStreamGenerated<global::Demo.Customer>(Sql.QueryActive, new { isActive }, transaction, cancellationToken: cancellationToken);");
+    }
+
+    [Fact]
+    public void ShouldRejectAsyncStreamForUnsupportedOperations()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    IAsyncEnumerable<Customer> GetPageCustomers(int skip, int take, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD002" && d.Severity == DiagnosticSeverity.Error).ShouldBeTrue();
+    }
+
     private static GeneratorResult RunGenerator(string source, string? dialect = null)
     {
         var syntaxTree = CSharpSyntaxTree.ParseText(source);

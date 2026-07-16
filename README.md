@@ -135,6 +135,30 @@ Task<bool> ExistsCustomerByEmail(string email, CancellationToken ct);
 
 Property names are validated against the entity at compile time (diagnostic `DBSGD027`). `Count*` and `Exists*` resolve the entity from the method name (`CountCustomers` -> `Customer`) or from `[DbOperation(Entity = ...)]`.
 
+### Bulk Operations
+
+Write methods accept collections. Inserts and updates execute the statement per item through Dapper's multi-execute, and plural `By` clauses with enumerable parameters generate `IN` filters:
+
+```csharp
+Task<int> InsertCustomers(IEnumerable<Customer> entities, CancellationToken ct);
+Task<int> DeleteCustomersByIds(IEnumerable<int> ids, CancellationToken ct);   // WHERE [Id] IN @ids
+Task<IEnumerable<Customer>> GetCustomersByIds(IReadOnlyList<int> ids, CancellationToken ct);
+```
+
+### Streaming
+
+Read methods can return `IAsyncEnumerable<T>` to stream rows without buffering (uses Dapper's unbuffered query; requires a `DbConnection`-based provider connection, which both provider packages supply):
+
+```csharp
+IAsyncEnumerable<Customer> GetAllCustomers(CancellationToken ct);
+IAsyncEnumerable<Customer> GetCustomersByEmail(string email, CancellationToken ct);
+
+[DbQuery(From = "Customers", Where = "IsActive = @isActive")]
+IAsyncEnumerable<Customer> QueryActive(bool isActive, CancellationToken ct);
+```
+
+Streaming is supported for `GetAll*`, `GetBy*`, and `[DbQuery]` methods.
+
 ### Explicit Operations
 
 `[DbOperation]` overrides name conventions entirely, so methods can be named freely:
@@ -202,6 +226,7 @@ Use these to review generated SQL, log it, or assert on it in your own tests. Fo
 - `[DbColumn]` maps a CLR property to a SQL column.
 - `[DbKey]` marks the key property used by update, delete, and get-by-id operations.
 - `[DbIgnore]` excludes a property from generated SQL.
+- `[DbRowVersion]` marks a database-generated concurrency token (for example SQL Server `rowversion`). The column is excluded from INSERT and UPDATE SET clauses and appended to the WHERE clause of updates and entity-based deletes, so a stale write affects zero rows — check the returned row count to detect conflicts.
 - `DbTableAttribute.PrimaryKey` can be used instead of `[DbKey]` when you cannot modify the entity source.
 
 ### Delete Method Resolution
@@ -246,6 +271,7 @@ The method name should still mirror the entity name closely. If the convention i
 | `[DbColumn]` | Maps a property to a column |
 | `[DbKey]` | Marks the entity key |
 | `[DbIgnore]` | Excludes a property from SQL generation |
+| `[DbRowVersion]` | Marks a concurrency token used in update/delete WHERE clauses |
 | `[DbQuery]` | Declares generated query composition |
 | `[DbJoin]` | Declares typed joins for a query method |
 | `[DbStoredProcedure]` | Declares a stored procedure call |
@@ -379,6 +405,7 @@ catch
 | `DBSGD025` | GetPage parameters cannot be identified | Name the parameters `skip`/`offset` and `take`/`limit`/`pageSize`/`fetch` |
 | `DBSGD026` | Query references an unknown SQL parameter | Fix the `@parameter` name to match a method parameter |
 | `DBSGD027` | Convention property is invalid | Use a CLR property name that exists on the entity in the `By` clause |
+| `DBSGD028` | Query parameter is unused | Reference the parameter in the query string or remove it |
 
 ## Known Limitations
 

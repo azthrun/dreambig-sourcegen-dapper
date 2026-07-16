@@ -26,6 +26,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     private const string DbStoredProcedureAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbStoredProcedureAttribute";
     private const string DbParamAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbParamAttribute";
     private const string DbOperationAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbOperationAttribute";
+    private const string DbRowVersionAttribute = "DreamBig.SourceGen.Dapper.Attributes.DbRowVersionAttribute";
     private const string DialectPropertyName = "build_property.DreamBigDapperDialect";
     private static readonly SymbolDisplayFormat NullableAwareTypeFormat =
         SymbolDisplayFormat.FullyQualifiedFormat.WithMiscellaneousOptions(
@@ -365,10 +366,18 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             {
                 case RepositoryOperationKind.Insert:
                 case RepositoryOperationKind.Update:
-                    if (operationParameters.Count == 1
-                        && method.Parameters.First(p => p.Name == operationParameters[0].Name).Type is INamedTypeSymbol entityType)
+                    if (operationParameters.Count == 1)
                     {
-                        entityCandidateType = entityType;
+                        var writeParameterType = method.Parameters.First(p => p.Name == operationParameters[0].Name).Type;
+                        if (TryGetEnumerableElementType(writeParameterType, out var batchElement)
+                            && batchElement is INamedTypeSymbol batchEntity)
+                        {
+                            entityCandidateType = batchEntity;
+                        }
+                        else if (writeParameterType is INamedTypeSymbol entityType)
+                        {
+                            entityCandidateType = entityType;
+                        }
                     }
 
                     break;
@@ -458,18 +467,35 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
                 for (var i = 0; i < filterProperties.Count; i++)
                 {
-                    if (!TryResolveColumn(entity, filterProperties[i], out var filterColumn))
+                    var propertyName = filterProperties[i];
+                    var parameterModel = operationParameters[i];
+                    var parameterIsEnumerable = TryGetEnumerableElementType(
+                        method.Parameters.First(p => p.Name == parameterModel.Name).Type,
+                        out _);
+
+                    if (TryResolveColumn(entity, propertyName, out var filterColumn))
                     {
-                        diagnostics.Add(Diagnostic.Create(
-                            DiagnosticDescriptors.ConventionPropertyInvalid,
-                            method.Locations.FirstOrDefault(),
-                            method.Name,
-                            filterProperties[i],
-                            entity.ClrTypeName));
-                        return null;
+                        filters.Add(new ConventionFilterModel(filterColumn, parameterModel.Name, IsIn: parameterIsEnumerable));
+                        continue;
                     }
 
-                    filters.Add(new ConventionFilterModel(filterColumn, operationParameters[i].Name));
+                    // A plural property with an enumerable parameter binds the singular column via IN,
+                    // e.g. DeleteCustomersByIds(IEnumerable<int> ids) -> WHERE [Id] IN @ids.
+                    if (parameterIsEnumerable
+                        && propertyName.EndsWith("s", StringComparison.OrdinalIgnoreCase)
+                        && TryResolveColumn(entity, propertyName.Substring(0, propertyName.Length - 1), out var singularColumn))
+                    {
+                        filters.Add(new ConventionFilterModel(singularColumn, parameterModel.Name, IsIn: true));
+                        continue;
+                    }
+
+                    diagnostics.Add(Diagnostic.Create(
+                        DiagnosticDescriptors.ConventionPropertyInvalid,
+                        method.Locations.FirstOrDefault(),
+                        method.Name,
+                        propertyName,
+                        entity.ClrTypeName));
+                    return null;
                 }
             }
         }
@@ -557,6 +583,29 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return null;
         }
 
+        if (methodShape.IsAsyncStream
+            && operationKind is not (RepositoryOperationKind.GetAll
+                or RepositoryOperationKind.GetBy
+                or RepositoryOperationKind.Query))
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.UnsupportedSignature,
+                method.Locations.FirstOrDefault(),
+                method.Name));
+            return null;
+        }
+
+        if (returnsIdentity
+            && operationParameters.Count == 1
+            && TryGetEnumerableElementType(method.Parameters.First(p => p.Name == operationParameters[0].Name).Type, out _))
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.UnsupportedSignature,
+                method.Locations.FirstOrDefault(),
+                method.Name));
+            return null;
+        }
+
         if ((operationKind == RepositoryOperationKind.Update
                 || (operationKind == RepositoryOperationKind.Delete && filters.Count == 0)
                 || operationKind == RepositoryOperationKind.GetById
@@ -573,8 +622,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         }
 
         if (entity is not null
-            && ((operationKind == RepositoryOperationKind.Insert && !entity.Properties.Any(static p => !p.IsKey || !p.IsDbGenerated))
-                || (operationKind == RepositoryOperationKind.Update && !entity.Properties.Any(static p => !p.IsKey))))
+            && ((operationKind == RepositoryOperationKind.Insert && !entity.Properties.Any(static p => (!p.IsKey || !p.IsDbGenerated) && !p.IsRowVersion))
+                || (operationKind == RepositoryOperationKind.Update && !entity.Properties.Any(static p => !p.IsKey && !p.IsRowVersion))))
         {
             diagnostics.Add(Diagnostic.Create(
                 DiagnosticDescriptors.NoWritableColumns,
@@ -612,7 +661,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
         var queryMetadata = operationKind == RepositoryOperationKind.GetPage
             ? ReadGetPageOrdering(method, entity, diagnostics)
-            : ReadQueryMetadata(method, entity, diagnostics);
+            : ReadQueryMetadata(method, entity, diagnostics, reportUnusedParameters: operationKind == RepositoryOperationKind.Query);
         if (storedProcedureMetadata is not null)
         {
             queryMetadata = queryMetadata with { StoredProcedure = storedProcedureMetadata };
@@ -636,6 +685,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             ReturnsEnumerable: methodShape.ReturnsEnumerable,
             ReturnsProcedureResult: methodShape.IsProcedureResult,
             ReturnsPagedResult: methodShape.IsPagedResult,
+            ReturnsAsyncStream: methodShape.IsAsyncStream,
             IsTaskWithoutResult: methodShape.IsTaskWithoutResult,
             ElementTypeName: methodShape.ElementType?.ToDisplayString(NullableAwareTypeFormat),
             OperationKind: operationKind,
@@ -647,7 +697,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             ReturnsIdentity: returnsIdentity);
     }
 
-    private static QueryMetadata ReadQueryMetadata(IMethodSymbol method, EntityModel? entity, List<Diagnostic> diagnostics)
+    private static QueryMetadata ReadQueryMetadata(IMethodSymbol method, EntityModel? entity, List<Diagnostic> diagnostics, bool reportUnusedParameters = false)
     {
         var queryAttribute = method.GetAttributes().FirstOrDefault(a => IsAttribute(a.AttributeClass, DbQueryAttribute));
         var from = ReadNamedAttributeString(queryAttribute, "From");
@@ -847,7 +897,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             ? null
             : string.Join(" AND ", whereFragments.Select(static fragment => $"({fragment})"));
 
-        ValidateQueryParameterReferences(method, rawParameterExpressions, diagnostics);
+        ValidateQueryParameterReferences(method, rawParameterExpressions, diagnostics, reportUnusedParameters);
 
         return new QueryMetadata(
             from,
@@ -943,7 +993,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     private static void ValidateQueryParameterReferences(
         IMethodSymbol method,
         IEnumerable<string?> expressions,
-        List<Diagnostic> diagnostics)
+        List<Diagnostic> diagnostics,
+        bool reportUnusedParameters)
     {
         var parameterNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var parameter in method.Parameters)
@@ -955,6 +1006,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         }
 
         var reportedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var expression in expressions)
         {
             if (string.IsNullOrWhiteSpace(expression))
@@ -968,6 +1020,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 foreach (Match match in Regex.Matches(segment, "(?<![@<:$!])@(?<name>[A-Za-z_][A-Za-z0-9_]*)"))
                 {
                     var name = match.Groups["name"].Value;
+                    usedNames.Add(name);
                     if (!parameterNames.Contains(name) && reportedNames.Add(name))
                     {
                         diagnostics.Add(Diagnostic.Create(
@@ -980,6 +1033,23 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
                 return segment;
             });
+        }
+
+        if (!reportUnusedParameters)
+        {
+            return;
+        }
+
+        foreach (var parameter in method.Parameters)
+        {
+            if (!IsCancellationTokenType(parameter.Type) && !usedNames.Contains(parameter.Name))
+            {
+                diagnostics.Add(Diagnostic.Create(
+                    DiagnosticDescriptors.QueryParameterUnused,
+                    method.Locations.FirstOrDefault(),
+                    method.Name,
+                    parameter.Name));
+            }
         }
     }
 
@@ -1026,13 +1096,15 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             var keyAttribute = property.GetAttributes().FirstOrDefault(a => IsAttribute(a.AttributeClass, DbKeyAttribute));
             var isKey = keyAttribute is not null || isConfiguredKey;
             var isDbGenerated = keyAttribute is null || (ReadNamedAttributeBool(keyAttribute, "Generated") ?? true);
+            var isRowVersion = HasAttribute(property, DbRowVersionAttribute);
 
             properties.Add(new EntityPropertyModel(
                 PropertyName: property.Name,
                 ColumnName: resolvedColumnName,
                 TypeName: property.Type.ToDisplayString(NullableAwareTypeFormat),
                 IsKey: isKey,
-                IsDbGenerated: isDbGenerated));
+                IsDbGenerated: isDbGenerated,
+                IsRowVersion: isRowVersion));
         }
 
         var duplicate = properties
@@ -1055,7 +1127,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             IsSchemaExplicit: schemaExplicit,
             TableName: tableName!,
             Properties: properties,
-            KeyProperty: properties.FirstOrDefault(static p => p.IsKey));
+            KeyProperty: properties.FirstOrDefault(static p => p.IsKey),
+            RowVersionProperty: properties.FirstOrDefault(static p => p.IsRowVersion));
     }
 
     private static RepositoryOperationKind ResolveOperationKind(IMethodSymbol method)
@@ -1458,7 +1531,10 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var sb = new StringBuilder();
         var parameterList = string.Join(", ", method.Parameters.Select(static p => $"{p.TypeName} {p.Name}"));
 
-        sb.AppendLine($"    public async {method.ReturnTypeName} {method.Name}({parameterList})");
+        // Streaming methods return IAsyncEnumerable<T> directly and must not be declared async.
+        sb.AppendLine(method.ReturnsAsyncStream
+            ? $"    public {method.ReturnTypeName} {method.Name}({parameterList})"
+            : $"    public async {method.ReturnTypeName} {method.Name}({parameterList})");
         sb.AppendLine("    {");
 
         switch (method.OperationKind)
@@ -1794,7 +1870,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return null;
         }
 
-        var writeColumns = method.Entity.Properties.Where(static p => !p.IsKey || !p.IsDbGenerated).ToList();
+        var writeColumns = method.Entity.Properties.Where(static p => (!p.IsKey || !p.IsDbGenerated) && !p.IsRowVersion).ToList();
         var columnsSql = string.Join(", ", writeColumns.Select(p => Quote(dialect, p.ColumnName, caseSensitive)));
         var valuesSql = string.Join(", ", writeColumns.Select(p => "@" + p.PropertyName));
         var table = QualifiedTable(dialect, method.Entity, caseSensitive);
@@ -1857,9 +1933,15 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return null;
         }
 
-        var writeColumns = method.Entity.Properties.Where(static p => !p.IsKey).ToList();
+        var writeColumns = method.Entity.Properties.Where(static p => !p.IsKey && !p.IsRowVersion).ToList();
         var setSql = string.Join(", ", writeColumns.Select(p => $"{Quote(dialect, p.ColumnName, caseSensitive)} = @{p.PropertyName}"));
-        return $"UPDATE {QualifiedTable(dialect, method.Entity, caseSensitive)} SET {setSql} WHERE {Quote(dialect, method.Entity.KeyProperty.ColumnName, caseSensitive)} = @{method.Entity.KeyProperty.PropertyName};";
+        var whereSql = $"{Quote(dialect, method.Entity.KeyProperty.ColumnName, caseSensitive)} = @{method.Entity.KeyProperty.PropertyName}";
+        if (method.Entity.RowVersionProperty is { } rowVersion)
+        {
+            whereSql += $" AND {Quote(dialect, rowVersion.ColumnName, caseSensitive)} = @{rowVersion.PropertyName}";
+        }
+
+        return $"UPDATE {QualifiedTable(dialect, method.Entity, caseSensitive)} SET {setSql} WHERE {whereSql};";
     }
 
     private static void RenderUpdate(RepositoryMethodModel method, StringBuilder sb, string? sqlConstName)
@@ -1887,7 +1969,10 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     }
 
     private static string BuildFilterWhereClause(RepositoryMethodModel method, DatabaseDialect dialect, bool caseSensitive)
-        => string.Join(" AND ", method.Filters.Select(f => $"{Quote(dialect, f.ColumnName, caseSensitive)} = @{f.ParameterName}"));
+        => string.Join(" AND ", method.Filters.Select(f =>
+            f.IsIn
+                ? $"{Quote(dialect, f.ColumnName, caseSensitive)} IN @{f.ParameterName}"
+                : $"{Quote(dialect, f.ColumnName, caseSensitive)} = @{f.ParameterName}"));
 
     private static string BuildFilterParamExpression(RepositoryMethodModel method)
         => "new { " + string.Join(", ", method.Filters.Select(static f => f.ParameterName)) + " }";
@@ -1919,7 +2004,13 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             TrimNullableSuffix(method.Entity.ClrTypeName),
             StringComparison.Ordinal);
         var sqlParamName = isEntityParameter ? method.Entity.KeyProperty.PropertyName : paramName;
-        return $"DELETE FROM {table} WHERE {Quote(dialect, keyColumn, caseSensitive)} = @{sqlParamName};";
+        var whereSql = $"{Quote(dialect, keyColumn, caseSensitive)} = @{sqlParamName}";
+        if (isEntityParameter && method.Entity.RowVersionProperty is { } rowVersion)
+        {
+            whereSql += $" AND {Quote(dialect, rowVersion.ColumnName, caseSensitive)} = @{rowVersion.PropertyName}";
+        }
+
+        return $"DELETE FROM {table} WHERE {whereSql};";
     }
 
     private static void RenderDelete(RepositoryMethodModel method, StringBuilder sb, string? sqlConstName)
@@ -2003,6 +2094,13 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         }
 
         sb.AppendLine("        var transaction = ResolveTransaction();");
+
+        if (method.ReturnsAsyncStream)
+        {
+            sb.AppendLine($"        return _connection.QueryStreamGenerated<{method.ElementTypeName}>(Sql.{sqlConstName}, transaction: transaction, cancellationToken: {method.CancellationTokenParameterName});");
+            return;
+        }
+
         sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(Sql.{sqlConstName}, transaction: transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
     }
 
@@ -2083,6 +2181,12 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         }
 
         sb.AppendLine("        var transaction = ResolveTransaction();");
+
+        if (method.ReturnsAsyncStream)
+        {
+            sb.AppendLine($"        return _connection.QueryStreamGenerated<{method.ElementTypeName}>(Sql.{sqlConstName}, {BuildFilterParamExpression(method)}, transaction, cancellationToken: {method.CancellationTokenParameterName});");
+            return;
+        }
 
         if (method.ReturnsEnumerable)
         {
@@ -2186,6 +2290,13 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             : "new { " + string.Join(", ", operationParameters.Select(static p => p.Name)) + " }";
 
         sb.AppendLine("        var transaction = ResolveTransaction();");
+
+        if (method.ReturnsAsyncStream)
+        {
+            sb.AppendLine($"        return _connection.QueryStreamGenerated<{method.ElementTypeName}>(Sql.{sqlConstName}, {anonymousParam}, transaction, cancellationToken: {method.CancellationTokenParameterName});");
+            return;
+        }
+
         sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(Sql.{sqlConstName}, {anonymousParam}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
     }
 
@@ -2903,6 +3014,28 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         return string.IsNullOrWhiteSpace(configured) ? "@" + parameter.Name : configured!;
     }
 
+    private static bool TryGetEnumerableElementType(ITypeSymbol type, out ITypeSymbol? elementType)
+    {
+        elementType = null;
+
+        if (type is IArrayTypeSymbol arrayType)
+        {
+            elementType = arrayType.ElementType;
+            return true;
+        }
+
+        if (type is INamedTypeSymbol { IsGenericType: true } named
+            && named.Name is "IEnumerable" or "IReadOnlyList" or "IReadOnlyCollection" or "IList" or "ICollection" or "List"
+            && named.ContainingNamespace is { IsGlobalNamespace: false } ns
+            && ns.ToDisplayString() == "System.Collections.Generic")
+        {
+            elementType = named.TypeArguments[0];
+            return true;
+        }
+
+        return false;
+    }
+
     private static bool IsCancellationTokenType(ITypeSymbol type)
     {
         var typeName = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
@@ -2974,6 +3107,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         bool ReturnsEnumerable,
         bool ReturnsProcedureResult,
         bool ReturnsPagedResult,
+        bool ReturnsAsyncStream,
         bool IsTaskWithoutResult,
         string? ElementTypeName,
         RepositoryOperationKind OperationKind,
@@ -2986,7 +3120,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
     private sealed record ConventionFilterModel(
         string ColumnName,
-        string ParameterName);
+        string ParameterName,
+        bool IsIn = false);
 
     private sealed record MethodParameterModel(
         string Name,
@@ -3001,14 +3136,16 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         bool IsSchemaExplicit,
         string TableName,
         IReadOnlyList<EntityPropertyModel> Properties,
-        EntityPropertyModel? KeyProperty);
+        EntityPropertyModel? KeyProperty,
+        EntityPropertyModel? RowVersionProperty);
 
     private sealed record EntityPropertyModel(
         string PropertyName,
         string ColumnName,
         string TypeName,
         bool IsKey,
-        bool IsDbGenerated);
+        bool IsDbGenerated,
+        bool IsRowVersion);
 
     private sealed record QueryMetadata(
         string? From,
@@ -3097,10 +3234,19 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         bool ReturnsEnumerable,
         bool IsProcedureResult,
         ITypeSymbol? ElementType,
-        bool IsPagedResult = false)
+        bool IsPagedResult = false,
+        bool IsAsyncStream = false)
     {
         public static MethodShape FromReturnType(ITypeSymbol returnType)
         {
+            if (returnType is INamedTypeSymbol asyncStream
+                && asyncStream.IsGenericType
+                && asyncStream.Name == "IAsyncEnumerable"
+                && IsInNamespace(asyncStream, "System.Collections.Generic"))
+            {
+                return new MethodShape(true, true, false, true, false, asyncStream.TypeArguments[0], IsAsyncStream: true);
+            }
+
             if (returnType is INamedTypeSymbol named
                 && named.Name is "Task" or "ValueTask"
                 && IsInNamespace(named, "System.Threading.Tasks"))

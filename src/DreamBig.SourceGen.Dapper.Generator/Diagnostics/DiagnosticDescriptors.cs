@@ -204,6 +204,14 @@ internal static class DiagnosticDescriptors
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
+    public static readonly DiagnosticDescriptor QueryParameterUnused = new(
+        id: "DBSGD028",
+        title: "Query parameter is unused",
+        messageFormat: "Repository method '{0}' declares parameter '{1}' that is not referenced by the query.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
     public static readonly DiagnosticDescriptor ConventionPropertyInvalid = new(
         id: "DBSGD027",
         title: "Convention property is invalid",
