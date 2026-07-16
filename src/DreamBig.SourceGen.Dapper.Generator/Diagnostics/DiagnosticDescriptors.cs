@@ -164,6 +164,30 @@ internal static class DiagnosticDescriptors
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
+    public static readonly DiagnosticDescriptor EntityUnresolved = new(
+        id: "DBSGD022",
+        title: "Entity type cannot be resolved",
+        messageFormat: "Repository method '{0}' cannot resolve its entity type. Declare an entity parameter, an entity element type, or an explicit [DbQuery] From value.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor NoWritableColumns = new(
+        id: "DBSGD023",
+        title: "Entity has no writable columns",
+        messageFormat: "Entity '{0}' has no writable columns for generated '{1}' operations.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor AmbiguousOperationName = new(
+        id: "DBSGD024",
+        title: "Repository method name matches multiple operations",
+        messageFormat: "Repository method '{0}' name matches multiple operation conventions; it is generated as '{1}'. Rename the method if a different operation was intended.",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
     public static readonly DiagnosticDescriptor UnitOfWorkDuplicateProperty = new(
         id: "DBSGD012",
         title: "Unit of Work contains duplicate repository property names",

@@ -77,7 +77,7 @@ public static class GeneratedDapperExtensions
     /// <param name="param">SQL parameters.</param>
     /// <param name="transaction">Optional transaction.</param>
     /// <param name="commandTimeout">Optional timeout.</param>
-    /// <param name="cancellationToken">Unused cancellation token reserved for API symmetry.</param>
+    /// <param name="cancellationToken">Command cancellation token.</param>
     /// <returns>Result rows.</returns>
     public static Task<IEnumerable<T>> QueryGeneratedAsync<T>(
         this IDbConnection connection,
@@ -89,9 +89,14 @@ public static class GeneratedDapperExtensions
     {
         ArgumentNullException.ThrowIfNull(connection);
 
-        _ = cancellationToken;
+        var command = new CommandDefinition(
+            sql,
+            param,
+            transaction,
+            commandTimeout,
+            cancellationToken: cancellationToken);
 
-        return connection.QueryAsync<T>(sql, param, transaction, commandTimeout);
+        return connection.QueryAsync<T>(command);
     }
 
     /// <summary>
@@ -123,7 +128,7 @@ public static class GeneratedDapperExtensions
     /// <param name="param">Parameters.</param>
     /// <param name="transaction">Optional transaction.</param>
     /// <param name="commandTimeout">Optional timeout.</param>
-    /// <param name="cancellationToken">Unused cancellation token reserved for API symmetry.</param>
+    /// <param name="cancellationToken">Command cancellation token.</param>
     /// <returns>Affected row count.</returns>
     public static Task<int> ExecuteGeneratedAsync(
         this IDbConnection connection,
@@ -135,9 +140,14 @@ public static class GeneratedDapperExtensions
     {
         ArgumentNullException.ThrowIfNull(connection);
 
-        _ = cancellationToken;
+        var command = new CommandDefinition(
+            sql,
+            param,
+            transaction,
+            commandTimeout,
+            cancellationToken: cancellationToken);
 
-        return connection.ExecuteAsync(sql, param, transaction, commandTimeout);
+        return connection.ExecuteAsync(command);
     }
 
     /// <summary>
@@ -171,10 +181,7 @@ public static class GeneratedDapperExtensions
                 commandTimeout: commandTimeout)
             .ToList();
 
-        var outputs = outputParameterNames.ToDictionary<string, string, object?>(
-            static n => n,
-            n => parameters.Get<dynamic>(n) as object);
-        return new GeneratedProcedureResult<T>(rows, outputs);
+        return new GeneratedProcedureResult<T>(rows, CollectOutputValues(parameters, outputParameterNames));
     }
 
     /// <summary>
@@ -212,9 +219,29 @@ public static class GeneratedDapperExtensions
 
         var rows = (await connection.QueryAsync<T>(command).ConfigureAwait(false)).ToList();
 
-        var outputs = outputParameterNames.ToDictionary<string, string, object?>(
-            static n => n,
-            n => parameters.Get<dynamic>(n) as object);
-        return new GeneratedProcedureResult<T>(rows, outputs);
+        return new GeneratedProcedureResult<T>(rows, CollectOutputValues(parameters, outputParameterNames));
+    }
+
+    private static Dictionary<string, object?> CollectOutputValues(
+        DynamicParameters parameters,
+        IEnumerable<string> outputParameterNames)
+    {
+        var outputs = new Dictionary<string, object?>();
+
+        foreach (var name in outputParameterNames)
+        {
+            try
+            {
+                outputs[name] = parameters.Get<object?>(name);
+            }
+            catch (Exception exception)
+            {
+                throw new InvalidOperationException(
+                    $"Output parameter '{name}' was not found on the executed command or could not be read.",
+                    exception);
+            }
+        }
+
+        return outputs;
     }
 }

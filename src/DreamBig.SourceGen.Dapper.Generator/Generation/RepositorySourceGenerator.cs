@@ -37,31 +37,40 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     /// <param name="context">Incremental generator context.</param>
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
-        var interfaces = context.SyntaxProvider
-            .CreateSyntaxProvider(
-                static (node, _) => node is InterfaceDeclarationSyntax ids && ids.AttributeLists.Count > 0,
-                static (ctx, _) => (INamedTypeSymbol?)ctx.SemanticModel.GetDeclaredSymbol((InterfaceDeclarationSyntax)ctx.Node))
-            .Where(static symbol => symbol is not null)
-            .Select(static (symbol, _) => symbol!);
+        var repositoryInterfaces = context.SyntaxProvider
+            .ForAttributeWithMetadataName(
+                DbRepositoryAttribute,
+                static (node, _) => node is InterfaceDeclarationSyntax,
+                static (ctx, _) => (INamedTypeSymbol)ctx.TargetSymbol)
+            .Collect();
+
+        var unitOfWorkInterfaces = context.SyntaxProvider
+            .ForAttributeWithMetadataName(
+                DbUnitOfWorkAttribute,
+                static (node, _) => node is InterfaceDeclarationSyntax,
+                static (ctx, _) => (INamedTypeSymbol)ctx.TargetSymbol)
+            .Collect();
 
         var dialect = context.AnalyzerConfigOptionsProvider
             .Select(static (provider, _) => ResolveDialect(provider));
 
-        var compilationAndInterfaces = context.CompilationProvider
-            .Combine(interfaces.Collect())
+        var payload = repositoryInterfaces
+            .Combine(unitOfWorkInterfaces)
             .Combine(dialect);
 
-        context.RegisterSourceOutput(compilationAndInterfaces, static (spc, payload) =>
+        context.RegisterSourceOutput(payload, static (spc, payload) =>
         {
-            var ((compilation, candidates), dialect) = payload;
-            _ = compilation;
+            var ((repositoryCandidates, unitOfWorkCandidates), dialect) = payload;
             var generatedRepositories = new Dictionary<string, RepositoryModel>(StringComparer.Ordinal);
             var failedRepositories = new HashSet<string>(StringComparer.Ordinal);
             var generatedUnitsOfWork = new List<UnitOfWorkModel>();
+            var processedRepositories = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+            var processedUnitsOfWork = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+            var usedHintNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var interfaceSymbol in candidates)
+            foreach (var interfaceSymbol in repositoryCandidates)
             {
-                if (!HasAttribute(interfaceSymbol, DbRepositoryAttribute))
+                if (!processedRepositories.Add(interfaceSymbol))
                 {
                     continue;
                 }
@@ -81,13 +90,13 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 }
 
                 var source = RenderRepository(repository, dialect);
-                spc.AddSource($"{repository.ImplementationName}.g.cs", SourceText.From(source, Encoding.UTF8));
+                spc.AddSource(BuildHintName(usedHintNames, repository.Namespace, repository.ImplementationName), SourceText.From(source, Encoding.UTF8));
                 generatedRepositories[interfaceSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)] = repository;
             }
 
-            foreach (var interfaceSymbol in candidates)
+            foreach (var interfaceSymbol in unitOfWorkCandidates)
             {
-                if (!HasAttribute(interfaceSymbol, DbUnitOfWorkAttribute))
+                if (!processedUnitsOfWork.Add(interfaceSymbol))
                 {
                     continue;
                 }
@@ -106,13 +115,26 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 }
 
                 var source = RenderUnitOfWork(unitOfWork);
-                spc.AddSource($"{unitOfWork.ImplementationName}.g.cs", SourceText.From(source, Encoding.UTF8));
+                spc.AddSource(BuildHintName(usedHintNames, unitOfWork.Namespace, unitOfWork.ImplementationName), SourceText.From(source, Encoding.UTF8));
                 generatedUnitsOfWork.Add(unitOfWork);
             }
 
             var diSource = RenderServiceRegistration(generatedRepositories.Values, generatedUnitsOfWork);
             spc.AddSource("DreamBigDapperGeneratedServiceCollectionExtensions.g.cs", SourceText.From(diSource, Encoding.UTF8));
         });
+    }
+
+    private static string BuildHintName(ISet<string> usedHintNames, string? ns, string implementationName)
+    {
+        var baseName = string.IsNullOrWhiteSpace(ns) ? implementationName : $"{ns}.{implementationName}";
+        var hintName = $"{baseName}.g.cs";
+        var suffix = 1;
+        while (!usedHintNames.Add(hintName))
+        {
+            hintName = $"{baseName}_{suffix++}.g.cs";
+        }
+
+        return hintName;
     }
 
     private static RepositoryModel? BuildRepositoryModel(INamedTypeSymbol interfaceSymbol, List<Diagnostic> diagnostics)
@@ -319,9 +341,18 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return null;
         }
 
+        if (HasAmbiguousOperationName(method.Name, operationKind))
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.AmbiguousOperationName,
+                method.Locations.FirstOrDefault(),
+                method.Name,
+                operationKind.ToString()));
+        }
+
         var operationParameters = parameters.Where(static p => !p.IsCancellationToken).ToList();
 
-        EntityModel? entity = null;
+        INamedTypeSymbol? entityCandidateType = null;
 
         switch (operationKind)
         {
@@ -330,7 +361,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 if (operationParameters.Count == 1
                     && method.Parameters.First(p => p.Name == operationParameters[0].Name).Type is INamedTypeSymbol entityType)
                 {
-                    entity = BuildEntityModel(entityType, method, diagnostics);
+                    entityCandidateType = entityType;
                 }
 
                 break;
@@ -338,31 +369,50 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             case RepositoryOperationKind.GetAll:
             case RepositoryOperationKind.GetPage:
             case RepositoryOperationKind.Query:
-                var entityCandidate = methodShape.ElementType as INamedTypeSymbol;
-                if (entityCandidate is not null)
-                {
-                    entity = BuildEntityModel(entityCandidate, method, diagnostics);
-                }
-
-                break;
             case RepositoryOperationKind.StoredProcedure:
-                var spEntity = methodShape.ElementType as INamedTypeSymbol;
-                if (spEntity is not null)
-                {
-                    entity = BuildEntityModel(spEntity, method, diagnostics);
-                }
-
+                entityCandidateType = methodShape.ElementType as INamedTypeSymbol;
                 break;
             case RepositoryOperationKind.Delete:
-                var deleteEntity = TryResolveDeleteEntity(method);
-                if (deleteEntity is not null)
-                {
-                    entity = BuildEntityModel(deleteEntity, method, diagnostics);
-                }
-
+                entityCandidateType = TryResolveDeleteEntity(method);
                 break;
             default:
                 break;
+        }
+
+        EntityModel? entity = null;
+        if (entityCandidateType is not null)
+        {
+            entity = BuildEntityModel(entityCandidateType, method, diagnostics);
+            if (entity is null)
+            {
+                return null;
+            }
+        }
+
+        if (entity is null
+            && operationKind is RepositoryOperationKind.Insert
+                or RepositoryOperationKind.Update
+                or RepositoryOperationKind.Delete
+                or RepositoryOperationKind.GetById
+                or RepositoryOperationKind.GetAll
+                or RepositoryOperationKind.GetPage)
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.EntityUnresolved,
+                method.Locations.FirstOrDefault(),
+                method.Name));
+            return null;
+        }
+
+        if ((operationKind is RepositoryOperationKind.Insert or RepositoryOperationKind.Update && operationParameters.Count != 1)
+            || (operationKind is RepositoryOperationKind.Delete or RepositoryOperationKind.GetById && operationParameters.Count == 0)
+            || (operationKind is RepositoryOperationKind.GetPage && operationParameters.Count != 2))
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.UnsupportedSignature,
+                method.Locations.FirstOrDefault(),
+                method.Name));
+            return null;
         }
 
         if (methodShape.IsTaskWithoutResult
@@ -391,6 +441,19 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return null;
         }
 
+        if (entity is not null
+            && ((operationKind == RepositoryOperationKind.Insert && !entity.Properties.Any(static p => !p.IsKey || !p.IsDbGenerated))
+                || (operationKind == RepositoryOperationKind.Update && !entity.Properties.Any(static p => !p.IsKey))))
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.NoWritableColumns,
+                method.Locations.FirstOrDefault(),
+                entity.ClrTypeName,
+                operationKind.ToString()));
+            return null;
+        }
+
+        StoredProcedureMetadata? storedProcedureMetadata = null;
         if (operationKind == RepositoryOperationKind.StoredProcedure)
         {
             var spAttribute = method.GetAttributes().FirstOrDefault(a => IsAttribute(a.AttributeClass, DbStoredProcedureAttribute));
@@ -406,25 +469,31 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                     method.Name));
                 return null;
             }
-        }
 
-        var queryMetadata = ReadQueryMetadata(method, entity, diagnostics);
-        if (operationKind == RepositoryOperationKind.StoredProcedure)
-        {
-            var spAttribute = method.GetAttributes().FirstOrDefault(a => IsAttribute(a.AttributeClass, DbStoredProcedureAttribute));
-            var spName = spAttribute?.ConstructorArguments.Length > 0
-                ? spAttribute.ConstructorArguments[0].Value as string
-                : null;
             var spSchemaExplicit = TryReadNamedAttributeString(spAttribute, "Schema", out var spSchema);
             if (!spSchemaExplicit)
             {
                 spSchema = null;
             }
 
-            queryMetadata = queryMetadata with
-            {
-                StoredProcedure = new StoredProcedureMetadata(spName ?? string.Empty, spSchema, spSchemaExplicit),
-            };
+            storedProcedureMetadata = new StoredProcedureMetadata(spName!, spSchema, spSchemaExplicit);
+        }
+
+        var queryMetadata = ReadQueryMetadata(method, entity, diagnostics);
+        if (storedProcedureMetadata is not null)
+        {
+            queryMetadata = queryMetadata with { StoredProcedure = storedProcedureMetadata };
+        }
+
+        if (operationKind == RepositoryOperationKind.Query
+            && entity is null
+            && string.IsNullOrWhiteSpace(queryMetadata.From))
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.EntityUnresolved,
+                method.Locations.FirstOrDefault(),
+                method.Name));
+            return null;
         }
 
         return new RepositoryMethodModel(
@@ -690,11 +759,16 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 && (string.Equals(property.Name, configuredPrimaryKey, StringComparison.OrdinalIgnoreCase)
                     || string.Equals(resolvedColumnName, configuredPrimaryKey, StringComparison.OrdinalIgnoreCase));
 
+            var keyAttribute = property.GetAttributes().FirstOrDefault(a => IsAttribute(a.AttributeClass, DbKeyAttribute));
+            var isKey = keyAttribute is not null || isConfiguredKey;
+            var isDbGenerated = keyAttribute is null || (ReadNamedAttributeBool(keyAttribute, "Generated") ?? true);
+
             properties.Add(new EntityPropertyModel(
                 PropertyName: property.Name,
                 ColumnName: resolvedColumnName,
                 TypeName: property.Type.ToDisplayString(NullableAwareTypeFormat),
-                IsKey: HasAttribute(property, DbKeyAttribute) || isConfiguredKey));
+                IsKey: isKey,
+                IsDbGenerated: isDbGenerated));
         }
 
         var duplicate = properties
@@ -772,7 +846,26 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return null;
         }
 
+        foreach (var parameter in method.Parameters)
+        {
+            if (IsCancellationTokenType(parameter.Type))
+            {
+                continue;
+            }
+
+            if (parameter.Type is INamedTypeSymbol { TypeKind: TypeKind.Class, SpecialType: SpecialType.None } namedType
+                && !IsSystemNamespace(namedType.ContainingNamespace))
+            {
+                return namedType;
+            }
+        }
+
         var candidateName = method.Name.Substring("Delete".Length);
+        if (candidateName.EndsWith("Async", StringComparison.OrdinalIgnoreCase))
+        {
+            candidateName = candidateName.Substring(0, candidateName.Length - "Async".Length);
+        }
+
         if (string.IsNullOrWhiteSpace(candidateName))
         {
             return null;
@@ -802,6 +895,59 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
         return null;
     }
+
+    private static bool IsSystemNamespace(INamespaceSymbol? ns)
+    {
+        if (ns is null || ns.IsGlobalNamespace)
+        {
+            return false;
+        }
+
+        var display = ns.ToDisplayString();
+        return display == "System" || display.StartsWith("System.", StringComparison.Ordinal);
+    }
+
+    private static bool HasAmbiguousOperationName(string methodName, RepositoryOperationKind operationKind)
+    {
+        var stem = operationKind switch
+        {
+            RepositoryOperationKind.Insert => "Insert",
+            RepositoryOperationKind.Update => "Update",
+            RepositoryOperationKind.Delete => "Delete",
+            RepositoryOperationKind.GetById => "GetById",
+            RepositoryOperationKind.GetAll => "GetAll",
+            RepositoryOperationKind.GetPage => "GetPage",
+            _ => null,
+        };
+
+        if (stem is null || methodName.Length <= stem.Length)
+        {
+            return false;
+        }
+
+        var remainder = methodName.Substring(stem.Length);
+        foreach (var otherStem in new[] { "Insert", "Update", "Delete" })
+        {
+            var index = remainder.IndexOf(otherStem, StringComparison.Ordinal);
+            while (index >= 0)
+            {
+                var end = index + otherStem.Length;
+                if (end >= remainder.Length || char.IsUpper(remainder[end]))
+                {
+                    return true;
+                }
+
+                index = remainder.IndexOf(otherStem, end, StringComparison.Ordinal);
+            }
+        }
+
+        return false;
+    }
+
+    private static string TrimNullableSuffix(string typeName)
+        => typeName.EndsWith("?", StringComparison.Ordinal)
+            ? typeName.Substring(0, typeName.Length - 1)
+            : typeName;
 
     private static string RenderRepository(RepositoryModel model, DatabaseDialect dialect)
     {
@@ -930,7 +1076,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             sb.AppendLine();
         }
 
-        sb.AppendLine($"public sealed partial class {model.ImplementationName} : {model.InterfaceQualifiedName}, IGeneratedTransactionContext, IAsyncDisposable");
+        sb.AppendLine($"public sealed partial class {model.ImplementationName} : {model.InterfaceQualifiedName}, IGeneratedTransactionContext, IDisposable, IAsyncDisposable");
         sb.AppendLine("{");
         sb.AppendLine("    private readonly Func<IDbConnection> _connectionFactory;");
         sb.AppendLine("    private IDbConnection? _connection;");
@@ -967,7 +1113,15 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine("        }");
         sb.AppendLine();
         sb.AppendLine("        await EnsureConnectionOpenAsync(cancellationToken).ConfigureAwait(false);");
-        sb.AppendLine("        _currentTransaction = GetOrCreateConnection().BeginTransaction(isolationLevel);");
+        sb.AppendLine("        var connection = GetOrCreateConnection();");
+        sb.AppendLine("        if (connection is System.Data.Common.DbConnection dbConnection)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            _currentTransaction = await dbConnection.BeginTransactionAsync(isolationLevel, cancellationToken).ConfigureAwait(false);");
+        sb.AppendLine("        }");
+        sb.AppendLine("        else");
+        sb.AppendLine("        {");
+        sb.AppendLine("            _currentTransaction = connection.BeginTransaction(isolationLevel);");
+        sb.AppendLine("        }");
         sb.AppendLine("    }");
         sb.AppendLine();
         sb.AppendLine("    public async Task CommitAsync(CancellationToken cancellationToken = default)");
@@ -1018,6 +1172,20 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine();
         sb.AppendLine("        await DisposeTransactionAsync(transaction).ConfigureAwait(false);");
         sb.AppendLine("        _currentTransaction = null;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    public void Dispose()");
+        sb.AppendLine("    {");
+        sb.AppendLine("        if (_isDisposed)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            return;");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        _isDisposed = true;");
+        sb.AppendLine();
+        sb.AppendLine("        _currentTransaction?.Dispose();");
+        sb.AppendLine("        _currentTransaction = null;");
+        sb.AppendLine("        _connection?.Dispose();");
         sb.AppendLine("    }");
         sb.AppendLine();
         sb.AppendLine("    public async ValueTask DisposeAsync()");
@@ -1110,6 +1278,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         sb.AppendLine("using System;");
         sb.AppendLine("using System.Linq;");
         sb.AppendLine("using Microsoft.Extensions.DependencyInjection;");
+        sb.AppendLine("using Microsoft.Extensions.DependencyInjection.Extensions;");
         sb.AppendLine();
         sb.AppendLine("namespace DreamBig.SourceGen.Dapper;");
         sb.AppendLine();
@@ -1139,13 +1308,13 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         foreach (var repository in repositories.OrderBy(static r => r.InterfaceQualifiedName, StringComparer.Ordinal))
         {
             var implementation = GetQualifiedImplementationName(repository.Namespace, repository.ImplementationName);
-            sb.AppendLine($"        services.AddScoped<{repository.InterfaceQualifiedName}, {implementation}>();");
+            sb.AppendLine($"        services.TryAddScoped<{repository.InterfaceQualifiedName}, {implementation}>();");
         }
 
         foreach (var unitOfWork in unitOfWorks.OrderBy(static u => u.InterfaceQualifiedName, StringComparer.Ordinal))
         {
             var implementation = GetQualifiedImplementationName(unitOfWork.Namespace, unitOfWork.ImplementationName);
-            sb.AppendLine($"        services.AddScoped<{unitOfWork.InterfaceQualifiedName}, {implementation}>();");
+            sb.AppendLine($"        services.TryAddScoped<{unitOfWork.InterfaceQualifiedName}, {implementation}>();");
         }
 
         sb.AppendLine();
@@ -1183,7 +1352,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var entityParameter = operationParameters[0].Name;
         sb.AppendLine($"        EnsureTransactionRequired(\"{method.Name}\");");
         sb.AppendLine("        var transaction = ResolveTransaction();");
-        var writeColumns = method.Entity.Properties.Where(static p => !p.IsKey).ToList();
+        var writeColumns = method.Entity.Properties.Where(static p => !p.IsKey || !p.IsDbGenerated).ToList();
         var columnsSql = string.Join(", ", writeColumns.Select(p => Quote(dialect, p.ColumnName, caseSensitive)));
         var valuesSql = string.Join(", ", writeColumns.Select(p => "@" + p.PropertyName));
         var sql = $"INSERT INTO {QualifiedTable(dialect, method.Entity, caseSensitive)} ({columnsSql}) VALUES ({valuesSql});";
@@ -1235,13 +1404,26 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return;
         }
 
-        var table = method.Entity is null ? QualifiedTable(dialect, "Unknown", caseSensitive) : QualifiedTable(dialect, method.Entity, caseSensitive);
-        var keyColumn = method.Entity?.KeyProperty?.ColumnName ?? operationParameters[0].Name;
+        if (method.Entity is null || method.Entity.KeyProperty is null)
+        {
+            sb.AppendLine("        throw new NotSupportedException(\"Delete signature is invalid.\");");
+            return;
+        }
+
+        var table = QualifiedTable(dialect, method.Entity, caseSensitive);
+        var keyColumn = method.Entity.KeyProperty.ColumnName;
         var paramName = operationParameters[0].Name;
+        var isEntityParameter = string.Equals(
+            TrimNullableSuffix(operationParameters[0].TypeName),
+            TrimNullableSuffix(method.Entity.ClrTypeName),
+            StringComparison.Ordinal);
+
         sb.AppendLine($"        EnsureTransactionRequired(\"{method.Name}\");");
         sb.AppendLine("        var transaction = ResolveTransaction();");
-        var sql = $"DELETE FROM {table} WHERE {Quote(dialect, keyColumn, caseSensitive)} = @{paramName};";
-        var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", new {{ {paramName} }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
+        var sqlParamName = isEntityParameter ? method.Entity.KeyProperty.PropertyName : paramName;
+        var paramExpression = isEntityParameter ? paramName : $"new {{ {paramName} }}";
+        var sql = $"DELETE FROM {table} WHERE {Quote(dialect, keyColumn, caseSensitive)} = @{sqlParamName};";
+        var executeExpression = $"await _connection.ExecuteGeneratedAsync(\"{EscapeSql(sql)}\", {paramExpression}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false)";
 
         if (method.IsTaskWithoutResult)
         {
@@ -1287,22 +1469,25 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
     private static void RenderGetPage(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect, bool caseSensitive)
     {
-        if (method.Entity is null)
+        var operationParameters = method.Parameters.Where(static p => !p.IsCancellationToken).ToList();
+        if (method.Entity is null || operationParameters.Count != 2)
         {
             sb.AppendLine("        throw new NotSupportedException(\"GetPage signature is invalid.\");");
             return;
         }
 
+        var skipParameter = operationParameters[0].Name;
+        var takeParameter = operationParameters[1].Name;
         var orderBy = method.Entity.KeyProperty?.ColumnName ?? method.Entity.Properties.FirstOrDefault()?.ColumnName ?? "Id";
         var orderBySql = $"{BuildEntitySelect(method.Entity, dialect, caseSensitive)} ORDER BY {Quote(dialect, orderBy, caseSensitive)}";
         var sql = dialect switch
         {
-            DatabaseDialect.PostgreSql => $"{orderBySql} LIMIT @take OFFSET @skip;",
-            _ => $"{orderBySql} OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY;",
+            DatabaseDialect.PostgreSql => $"{orderBySql} LIMIT @{takeParameter} OFFSET @{skipParameter};",
+            _ => $"{orderBySql} OFFSET @{skipParameter} ROWS FETCH NEXT @{takeParameter} ROWS ONLY;",
         };
 
         sb.AppendLine("        var transaction = ResolveTransaction();");
-        sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ skip, take }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
+        sb.AppendLine($"        return await _connection.QueryGeneratedAsync<{method.ElementTypeName}>(\"{EscapeSql(sql)}\", new {{ {skipParameter}, {takeParameter} }}, transaction, cancellationToken: {method.CancellationTokenParameterName}).ConfigureAwait(false);");
     }
 
     private static void RenderQuery(RepositoryMethodModel method, StringBuilder sb, DatabaseDialect dialect, bool caseSensitive)
@@ -1315,9 +1500,11 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         {
             from = entity is null ? QualifiedTable(dialect, "Unknown", caseSensitive) : QualifiedTable(dialect, entity, caseSensitive);
         }
-        else if (!IsQualifiedTableExpression(from!))
+        else if (!IsQuotedTableExpression(from!))
         {
-            from = QualifiedTable(dialect, method.QueryMetadata.Schema, method.QueryMetadata.IsSchemaExplicit, from!, caseSensitive);
+            from = from!.IndexOf('.') >= 0
+                ? string.Join(".", from.Split('.').Select(part => Quote(dialect, part.Trim(), caseSensitive)))
+                : QualifiedTable(dialect, method.QueryMetadata.Schema, method.QueryMetadata.IsSchemaExplicit, from, caseSensitive);
         }
 
         var selectColumns = entity is null
@@ -1451,12 +1638,11 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         return $"{Quote(dialect, resolvedSchema!, caseSensitive)}.{Quote(dialect, table, caseSensitive)}";
     }
 
-    private static bool IsQualifiedTableExpression(string value)
+    private static bool IsQuotedTableExpression(string value)
         => value.IndexOf("[", StringComparison.Ordinal) >= 0
             || value.IndexOf("]", StringComparison.Ordinal) >= 0
             || value.IndexOf("\"", StringComparison.Ordinal) >= 0
-            || value.IndexOf("`", StringComparison.Ordinal) >= 0
-            || value.IndexOf(".", StringComparison.Ordinal) >= 0;
+            || value.IndexOf("`", StringComparison.Ordinal) >= 0;
 
     private static string Quote(DatabaseDialect dialect, string identifier, bool caseSensitive)
         => dialect switch
@@ -1776,8 +1962,79 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return null;
         }
 
+        return RewriteOutsideLiterals(expression!, segment => RewriteQueryExpressionSegment(segment, nodes, method, diagnostics, dialect, caseSensitive));
+    }
+
+    /// <summary>
+    /// Applies <paramref name="rewrite"/> only to the portions of <paramref name="expression"/> that are
+    /// outside SQL string literals ('...'), bracketed identifiers ([...]), and quoted identifiers ("..." or `...`).
+    /// </summary>
+    private static string RewriteOutsideLiterals(string expression, Func<string, string> rewrite)
+    {
+        var sb = new StringBuilder();
+        var segmentStart = 0;
+        var i = 0;
+
+        while (i < expression.Length)
+        {
+            var c = expression[i];
+            if (c is '\'' or '[' or '"' or '`')
+            {
+                sb.Append(rewrite(expression.Substring(segmentStart, i - segmentStart)));
+
+                var close = c switch
+                {
+                    '[' => ']',
+                    _ => c,
+                };
+
+                var j = i + 1;
+                while (j < expression.Length)
+                {
+                    if (expression[j] == close)
+                    {
+                        // '' inside a string literal is an escaped quote, not a terminator.
+                        if (close == '\'' && j + 1 < expression.Length && expression[j + 1] == '\'')
+                        {
+                            j += 2;
+                            continue;
+                        }
+
+                        break;
+                    }
+
+                    j++;
+                }
+
+                var end = j < expression.Length ? j + 1 : expression.Length;
+                sb.Append(expression, i, end - i);
+                i = end;
+                segmentStart = i;
+                continue;
+            }
+
+            i++;
+        }
+
+        sb.Append(rewrite(expression.Substring(segmentStart)));
+        return sb.ToString();
+    }
+
+    private static string RewriteQueryExpressionSegment(
+        string expression,
+        IReadOnlyDictionary<string, QueryNodeModel> nodes,
+        IMethodSymbol method,
+        List<Diagnostic> diagnostics,
+        DatabaseDialect? dialect,
+        bool caseSensitive)
+    {
+        if (expression.Length == 0)
+        {
+            return expression;
+        }
+
         var rewritten = Regex.Replace(
-            expression!,
+            expression,
             "(?<![@.\\[\"`])(?<alias>[A-Za-z_][A-Za-z0-9_]*)\\.(?<property>[A-Za-z_][A-Za-z0-9_]*)",
             match =>
             {
@@ -1850,10 +2107,10 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     }
 
     private static string FinalizeQueryExpression(string expression, DatabaseDialect dialect, bool caseSensitive)
-        => Regex.Replace(
-            expression,
-            "(?<alias>[A-Za-z_][A-Za-z0-9_]*)\\.(?<column>[A-Za-z_][A-Za-z0-9_]*)",
-            match => $"{match.Groups["alias"].Value}.{Quote(dialect, match.Groups["column"].Value, caseSensitive)}");
+        => RewriteOutsideLiterals(expression, segment => Regex.Replace(
+            segment,
+            "(?<![@.\\[\"`])(?<alias>[A-Za-z_][A-Za-z0-9_]*)\\.(?<column>[A-Za-z_][A-Za-z0-9_]*)",
+            match => $"{match.Groups["alias"].Value}.{Quote(dialect, match.Groups["column"].Value, caseSensitive)}"));
 
     private static string FormatQueryColumn(string columnName, DatabaseDialect? dialect, bool caseSensitive)
         => dialect is null ? columnName : Quote(dialect.Value, columnName, caseSensitive);
@@ -1877,7 +2134,44 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             "THEN" or
             "ELSE" or
             "END" or
-            "AS";
+            "AS" or
+            "SELECT" or
+            "FROM" or
+            "WHERE" or
+            "GROUP" or
+            "BY" or
+            "HAVING" or
+            "ORDER" or
+            "DISTINCT" or
+            "TOP" or
+            "JOIN" or
+            "INNER" or
+            "LEFT" or
+            "RIGHT" or
+            "FULL" or
+            "OUTER" or
+            "CROSS" or
+            "UNION" or
+            "ALL" or
+            "ANY" or
+            "SOME" or
+            "LIMIT" or
+            "OFFSET" or
+            "FETCH" or
+            "NEXT" or
+            "ROWS" or
+            "ONLY" or
+            "COUNT" or
+            "SUM" or
+            "MIN" or
+            "MAX" or
+            "AVG" or
+            "COALESCE" or
+            "NULLIF" or
+            "CAST" or
+            "CONVERT" or
+            "TRUE" or
+            "FALSE";
 
     private static bool TryResolveColumn(EntityModel entity, string propertyName, out string columnName)
     {
@@ -2041,7 +2335,8 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         string PropertyName,
         string ColumnName,
         string TypeName,
-        bool IsKey);
+        bool IsKey,
+        bool IsDbGenerated);
 
     private sealed record QueryMetadata(
         string? From,
@@ -2124,7 +2419,9 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     {
         public static MethodShape FromReturnType(ITypeSymbol returnType)
         {
-            if (returnType is INamedTypeSymbol named && named.Name == "Task")
+            if (returnType is INamedTypeSymbol named
+                && named.Name is "Task" or "ValueTask"
+                && IsInNamespace(named, "System.Threading.Tasks"))
             {
                 if (named.IsGenericType)
                 {
@@ -2138,14 +2435,16 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
             if (returnType is INamedTypeSymbol generic
                 && generic.IsGenericType
-                && generic.Name is "IEnumerable" or "IReadOnlyList" or "List")
+                && generic.Name is "IEnumerable" or "IReadOnlyList" or "List"
+                && IsInNamespace(generic, "System.Collections.Generic"))
             {
                 return new MethodShape(true, false, false, true, false, generic.TypeArguments[0]);
             }
 
             if (returnType is INamedTypeSymbol procedureResult
                 && procedureResult.IsGenericType
-                && procedureResult.Name == "GeneratedProcedureResult")
+                && procedureResult.Name == "GeneratedProcedureResult"
+                && IsInNamespace(procedureResult, "DreamBig.SourceGen.Dapper.Internal"))
             {
                 return new MethodShape(true, false, false, false, true, procedureResult.TypeArguments[0]);
             }
@@ -2159,5 +2458,10 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 ? new MethodShape(true, false, false, false, false, returnType)
                 : new MethodShape(false, false, false, false, false, null);
         }
+
+        private static bool IsInNamespace(INamedTypeSymbol symbol, string expectedNamespace)
+            => symbol.ContainingNamespace is { } ns
+                && !ns.IsGlobalNamespace
+                && ns.ToDisplayString() == expectedNamespace;
     }
 }

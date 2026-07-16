@@ -60,7 +60,7 @@ public interface ICustomerRepository
         generated.ShouldContain("public async global::System.Threading.Tasks.Task<int> InsertCustomer");
         generated.ShouldContain("public async global::System.Threading.Tasks.Task<global::Demo.Customer?> GetByIdCustomer");
         generated.ShouldContain("public static IServiceCollection AddDreamBigDapperGenerated");
-        generated.ShouldContain("services.AddScoped<global::Demo.ICustomerRepository, global::Demo.CustomerRepositoryGenerated>();");
+        generated.ShouldContain("services.TryAddScoped<global::Demo.ICustomerRepository, global::Demo.CustomerRepositoryGenerated>();");
     }
 
     [Fact]
@@ -116,6 +116,8 @@ public sealed class CustomerOrder
 {
     [DbKey]
     public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
 }
 
 [DbRepository]
@@ -624,6 +626,17 @@ namespace Demo;
 public sealed class Customer
 {
     public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbTable("Orders")]
+public sealed class Order
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Reference { get; set; } = string.Empty;
 }
 
 [DbRepository]
@@ -665,7 +678,7 @@ public interface IAppUnitOfWork
         generated.ShouldContain("EnsureTransactionRequired(\"InsertCustomer\")");
         generated.ShouldContain("EnsureTransactionRequired(\"DeleteOrder\")");
         generated.ShouldContain("var transaction = ResolveTransaction();");
-        generated.ShouldContain("services.AddScoped<global::Demo.IAppUnitOfWork, global::Demo.AppUnitOfWorkGenerated>();");
+        generated.ShouldContain("services.TryAddScoped<global::Demo.IAppUnitOfWork, global::Demo.AppUnitOfWorkGenerated>();");
     }
 
     [Fact]
@@ -793,6 +806,328 @@ public interface IAppUnitOfWork
 
         var result = RunGenerator(source);
         result.Diagnostics.Any(d => d.Id == "DBSGD012").ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ShouldGenerateSameNamedRepositoriesAcrossNamespaces()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace DemoA
+{
+    [DbTable("Customers")]
+    public sealed class Customer
+    {
+        [DbKey]
+        public int Id { get; set; }
+
+        public string Name { get; set; } = string.Empty;
+    }
+
+    [DbRepository]
+    public interface ICustomerRepository
+    {
+        Task<int> InsertCustomer(Customer entity, CancellationToken cancellationToken);
+    }
+}
+
+namespace DemoB
+{
+    [DbTable("Customers")]
+    public sealed class Customer
+    {
+        [DbKey]
+        public int Id { get; set; }
+
+        public string Name { get; set; } = string.Empty;
+    }
+
+    [DbRepository]
+    public interface ICustomerRepository
+    {
+        Task<int> InsertCustomer(Customer entity, CancellationToken cancellationToken);
+    }
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("services.TryAddScoped<global::DemoA.ICustomerRepository, global::DemoA.CustomerRepositoryGenerated>();");
+        generated.ShouldContain("services.TryAddScoped<global::DemoB.ICustomerRepository, global::DemoB.CustomerRepositoryGenerated>();");
+    }
+
+    [Fact]
+    public void ShouldNotRewriteColumnNamesInsideStringLiterals()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    [DbColumn("status_code")]
+    public string Status { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    [DbQuery(Where = "Status = 'Status'")]
+    Task<IEnumerable<Customer>> QueryActive(CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("[status_code] = 'Status'");
+    }
+
+    [Fact]
+    public void ShouldBindDeleteEntityParameterToKeyColumn()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<int> DeleteAsync(Customer entity, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("DELETE FROM [dbo].[Customers] WHERE [Id] = @Id");
+        generated.ShouldContain("ExecuteGeneratedAsync(\"DELETE FROM [dbo].[Customers] WHERE [Id] = @Id;\", entity, transaction");
+    }
+
+    [Fact]
+    public void ShouldUseDeclaredGetPageParameterNames()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<IEnumerable<Customer>> GetPageCustomers(int offset, int pageSize, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY");
+        generated.ShouldContain("new { offset, pageSize }");
+    }
+
+    [Fact]
+    public void ShouldIncludeClientAssignedKeyInInsert()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey(Generated = false)]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<int> InsertCustomer(Customer entity, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("INSERT INTO [dbo].[Customers] ([Id], [Name]) VALUES (@Id, @Name)");
+    }
+
+    [Fact]
+    public void ShouldReportEntityWithNoWritableColumns()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<int> InsertCustomer(Customer entity, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD023").ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ShouldReportUnresolvedDeleteEntity()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbRepository]
+public interface IOrderRepository
+{
+    Task<int> DeleteOrder(int id, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD022").ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ShouldSupportValueTaskReturnTypes()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    ValueTask<IEnumerable<Customer>> GetAllCustomers(CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("public async global::System.Threading.Tasks.ValueTask<global::System.Collections.Generic.IEnumerable<global::Demo.Customer>> GetAllCustomers");
+    }
+
+    [Fact]
+    public void ShouldWarnOnAmbiguousOperationName()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<int> InsertOrUpdateCustomer(Customer entity, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD024" && d.Severity == DiagnosticSeverity.Warning).ShouldBeTrue();
     }
 
     private static GeneratorResult RunGenerator(string source, string? dialect = null)

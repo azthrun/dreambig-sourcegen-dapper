@@ -73,7 +73,7 @@ public static class DreamBigDapperSqlServerServiceCollectionExtensions
 
         ArgumentNullException.ThrowIfNull(connectionStringFactory);
 
-        services.AddSingleton<Func<IServiceProvider, string>>(connectionStringFactory);
+        services.AddSingleton(new SqlServerConnectionStringResolver(connectionStringFactory));
         services.AddScoped<IDbConnection>(static provider =>
         {
             var resolved = ResolveConnectionString(provider);
@@ -89,8 +89,8 @@ public static class DreamBigDapperSqlServerServiceCollectionExtensions
 
     private static string ResolveConnectionString(IServiceProvider services)
     {
-        var factory = services.GetRequiredService<Func<IServiceProvider, string>>();
-        var connectionString = factory(services);
+        var resolver = services.GetRequiredService<SqlServerConnectionStringResolver>();
+        var connectionString = resolver.Factory(services);
 
         if (string.IsNullOrWhiteSpace(connectionString))
         {
@@ -102,34 +102,50 @@ public static class DreamBigDapperSqlServerServiceCollectionExtensions
 
     private static void TryAddGeneratedRepositories(IServiceCollection services)
     {
-        if (services.Any(static sd => sd.ServiceType.FullName == GeneratedMarkerTypeName))
-        {
-            return;
-        }
-
-        var extensionType = AppDomain.CurrentDomain
+        // Every consumer assembly emits a registration type with the same full name; invoke all of
+        // them so repositories spread across multiple assemblies are all registered. The generated
+        // registrations use TryAdd semantics, so repeated invocation is safe.
+        var registrationMethods = AppDomain.CurrentDomain
             .GetAssemblies()
-            .Select(static assembly => assembly.GetType(GeneratedExtensionsTypeName, throwOnError: false))
-            .FirstOrDefault(static type => type is not null);
+            .Select(static assembly =>
+            {
+                try
+                {
+                    return assembly.GetType(GeneratedExtensionsTypeName, throwOnError: false);
+                }
+                catch (ReflectionTypeLoadException)
+                {
+                    return null;
+                }
+            })
+            .Where(static type => type is not null)
+            .Select(static type => type!.GetMethod(
+                "AddDreamBigDapperGenerated",
+                BindingFlags.Public | BindingFlags.Static,
+                binder: null,
+                types: [typeof(IServiceCollection)],
+                modifiers: null))
+            .Where(static method => method is not null);
 
-        var method = extensionType?.GetMethod(
-            "AddDreamBigDapperGenerated",
-            BindingFlags.Public | BindingFlags.Static,
-            binder: null,
-            types: [typeof(IServiceCollection)],
-            modifiers: null);
-
-        if (method is null)
+        foreach (var method in registrationMethods)
         {
-            return;
+            method!.Invoke(null, [services]);
         }
-
-        method.Invoke(null, [services]);
     }
 
     private const string GeneratedExtensionsTypeName =
         "DreamBig.SourceGen.Dapper.DreamBigDapperGeneratedServiceCollectionExtensions";
+}
 
-    private const string GeneratedMarkerTypeName =
-        "DreamBig.SourceGen.Dapper.Internal.DreamBigDapperGeneratedMarker";
+/// <summary>
+/// Provider-scoped holder for the SQL Server connection string factory. Registering the raw
+/// <see cref="Func{IServiceProvider, String}"/> delegate type would collide with any other
+/// library (including the PostgreSQL provider) registering the same delegate type.
+/// </summary>
+internal sealed class SqlServerConnectionStringResolver(Func<IServiceProvider, string> factory)
+{
+    /// <summary>
+    /// Gets the connection string factory.
+    /// </summary>
+    public Func<IServiceProvider, string> Factory { get; } = factory;
 }

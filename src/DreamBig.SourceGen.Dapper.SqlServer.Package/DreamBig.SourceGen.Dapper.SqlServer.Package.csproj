@@ -48,10 +48,10 @@
     <None Include="..\..\README.md" Pack="true" PackagePath="/" Visible="false" />
     <None Include="..\..\LICENSE" Pack="true" PackagePath="/" Visible="false" />
     <None Include="buildTransitive\DreamBig.SourceGen.Dapper.SqlServer.props" Pack="true" PackagePath="buildTransitive/" Visible="false" />
-    <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.Abstractions.dll" Pack="true" PackagePath="lib/net10.0/" Visible="false" />
-    <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.Abstractions.xml" Pack="true" PackagePath="lib/net10.0/" Visible="false" />
-    <None Include="..\DreamBig.SourceGen.Dapper.SqlServer\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.SqlServer.dll" Pack="true" PackagePath="lib/net10.0/" Visible="false" />
-    <None Include="..\DreamBig.SourceGen.Dapper.SqlServer\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.SqlServer.xml" Pack="true" PackagePath="lib/net10.0/" Visible="false" />
+    <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\$(TargetFramework)\DreamBig.SourceGen.Dapper.Abstractions.dll" Pack="true" PackagePath="lib/$(TargetFramework)/" Visible="false" />
+    <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\$(TargetFramework)\DreamBig.SourceGen.Dapper.Abstractions.xml" Pack="true" PackagePath="lib/$(TargetFramework)/" Visible="false" />
+    <None Include="..\DreamBig.SourceGen.Dapper.SqlServer\bin\$(Configuration)\$(TargetFramework)\DreamBig.SourceGen.Dapper.SqlServer.dll" Pack="true" PackagePath="lib/$(TargetFramework)/" Visible="false" />
+    <None Include="..\DreamBig.SourceGen.Dapper.SqlServer\bin\$(Configuration)\$(TargetFramework)\DreamBig.SourceGen.Dapper.SqlServer.xml" Pack="true" PackagePath="lib/$(TargetFramework)/" Visible="false" />
     <None Include="..\DreamBig.SourceGen.Dapper.Generator\bin\$(Configuration)\netstandard2.0\DreamBig.SourceGen.Dapper.Generator.dll" Pack="true" PackagePath="analyzers/dotnet/cs/" Visible="false" />
   </ItemGroup>
 
