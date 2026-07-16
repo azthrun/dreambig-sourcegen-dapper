@@ -1952,6 +1952,51 @@ public interface ICustomerRepository
         result.Diagnostics.Any(d => d.Id == "DBSGD002" && d.Severity == DiagnosticSeverity.Error).ShouldBeTrue();
     }
 
+    [Fact]
+    public void ShouldGenerateSqliteDialectSql()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers", Schema = "dbo")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    [DbOperation(DbOperationKind.Insert, ReturnIdentity = true)]
+    Task<int> InsertCustomer(Customer entity, CancellationToken cancellationToken);
+    Task<Customer?> GetCustomerById(int id, CancellationToken cancellationToken);
+    Task<IEnumerable<Customer>> GetPageCustomers(int skip, int take, CancellationToken cancellationToken);
+    Task<int> CountCustomers(CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source, "Sqlite");
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        // SQLite has no schemas, so the explicit Schema = "dbo" is ignored.
+        generated.ShouldContain("INSERT INTO \\\"Customers\\\" (\\\"Name\\\") VALUES (@Name) RETURNING \\\"Id\\\";");
+        generated.ShouldContain("FROM \\\"Customers\\\" WHERE \\\"Id\\\" = @id;");
+        generated.ShouldContain("LIMIT @take OFFSET @skip;");
+        generated.ShouldContain("SELECT COUNT(*) FROM \\\"Customers\\\";");
+    }
+
     private static GeneratorResult RunGenerator(string source, string? dialect = null)
     {
         var syntaxTree = CSharpSyntaxTree.ParseText(source);

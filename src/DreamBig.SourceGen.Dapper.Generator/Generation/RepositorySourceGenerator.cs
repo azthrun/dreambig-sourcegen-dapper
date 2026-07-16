@@ -1885,7 +1885,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             var keyColumn = Quote(dialect, method.Entity.KeyProperty.ColumnName, caseSensitive);
             return dialect switch
             {
-                DatabaseDialect.PostgreSql => $"INSERT INTO {table} ({columnsSql}) VALUES ({valuesSql}) RETURNING {keyColumn};",
+                DatabaseDialect.PostgreSql or DatabaseDialect.Sqlite => $"INSERT INTO {table} ({columnsSql}) VALUES ({valuesSql}) RETURNING {keyColumn};",
                 _ => $"INSERT INTO {table} ({columnsSql}) OUTPUT INSERTED.{keyColumn} VALUES ({valuesSql});",
             };
         }
@@ -2124,7 +2124,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var orderBySql = $"{BuildEntitySelect(method.Entity, dialect, caseSensitive)} ORDER BY {Quote(dialect, orderByColumn, caseSensitive)} {ToSql(method.QueryMetadata.OrderByDirection)}";
         var pageSql = dialect switch
         {
-            DatabaseDialect.PostgreSql => $"{orderBySql} LIMIT @{takeParameter} OFFSET @{skipParameter};",
+            DatabaseDialect.PostgreSql or DatabaseDialect.Sqlite => $"{orderBySql} LIMIT @{takeParameter} OFFSET @{skipParameter};",
             _ => $"{orderBySql} OFFSET @{skipParameter} ROWS FETCH NEXT @{takeParameter} ROWS ONLY;",
         };
 
@@ -2138,7 +2138,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     }
 
     private static string CountExpression(DatabaseDialect dialect)
-        => dialect == DatabaseDialect.PostgreSql ? "COUNT(*)" : "COUNT_BIG(*)";
+        => dialect == DatabaseDialect.SqlServer ? "COUNT_BIG(*)" : "COUNT(*)";
 
     private static void RenderGetPage(RepositoryMethodModel method, StringBuilder sb, string? sqlConstName)
     {
@@ -2405,6 +2405,12 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
     private static string QualifiedTable(DatabaseDialect dialect, string? schema, bool isSchemaExplicit, string table, bool caseSensitive)
     {
+        // SQLite has no schemas; schema values (explicit or default) are ignored.
+        if (dialect == DatabaseDialect.Sqlite)
+        {
+            return Quote(dialect, table, caseSensitive);
+        }
+
         var resolvedSchema = isSchemaExplicit ? schema : ResolveDefaultSchema(dialect, schema);
         if (string.IsNullOrWhiteSpace(resolvedSchema))
         {
@@ -2423,7 +2429,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     private static string Quote(DatabaseDialect dialect, string identifier, bool caseSensitive)
         => dialect switch
         {
-            DatabaseDialect.PostgreSql => caseSensitive
+            DatabaseDialect.PostgreSql or DatabaseDialect.Sqlite => caseSensitive
                 ? $"\"{identifier.Replace("\"", "\"\"")}\""
                 : identifier,
             _ => $"[{identifier.Replace("]", "]]")}]",
@@ -2449,6 +2455,11 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         if (string.IsNullOrWhiteSpace(name))
         {
             name = "UnknownProcedure";
+        }
+
+        if (dialect == DatabaseDialect.Sqlite)
+        {
+            return Quote(dialect, name!, caseSensitive);
         }
 
         var schema = storedProcedure?.Schema;
@@ -3076,6 +3087,12 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             {
                 return DatabaseDialect.PostgreSql;
             }
+
+            if (string.Equals(value, "Sqlite", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "SQLite3", StringComparison.OrdinalIgnoreCase))
+            {
+                return DatabaseDialect.Sqlite;
+            }
         }
 
         return DatabaseDialect.SqlServer;
@@ -3225,6 +3242,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     {
         SqlServer,
         PostgreSql,
+        Sqlite,
     }
 
     private sealed record MethodShape(

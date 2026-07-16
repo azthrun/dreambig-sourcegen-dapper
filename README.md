@@ -12,7 +12,7 @@ It generates repository implementations, Unit of Work wrappers, and DI registrat
 - Generated query composition with `[DbQuery]` and `[DbJoin]`
 - Generated stored procedure execution with output parameter support
 - Generated Unit of Work implementations
-- Provider-specific SQL for SQL Server and PostgreSQL
+- Provider-specific SQL for SQL Server, PostgreSQL, and SQLite
 
 ## Install
 
@@ -20,6 +20,7 @@ Choose one provider package:
 
 - SQL Server: `DreamBig.SourceGen.Dapper.SqlServer`
 - PostgreSQL: `DreamBig.SourceGen.Dapper.PostgreSql`
+- SQLite: `DreamBig.SourceGen.Dapper.Sqlite`
 
 ### Package Reference
 
@@ -92,7 +93,7 @@ services.AddDreamBigDapperSqlServer(configuration);
 services.AddDreamBigDapperGenerated();
 ```
 
-For PostgreSQL, use `AddDreamBigDapperPostgreSql(configuration)` instead.
+For PostgreSQL, use `AddDreamBigDapperPostgreSql(configuration)` instead; for SQLite, `AddDreamBigDapperSqlite(configuration)`.
 
 The generator also emits `AddDreamBigDapperGenerated(IServiceCollection)`, which registers generated repositories and Unit of Work types as scoped services.
 
@@ -100,6 +101,7 @@ Configuration sections:
 
 - SQL Server: `DreamBig:Dapper:SqlServer`
 - PostgreSQL: `DreamBig:Dapper:PostgreSql`
+- SQLite: `DreamBig:Dapper:Sqlite`
 
 Both provider packages also expose overloads for raw connection strings and custom connection string factories.
 
@@ -407,8 +409,29 @@ catch
 | `DBSGD027` | Convention property is invalid | Use a CLR property name that exists on the entity in the `By` clause |
 | `DBSGD028` | Query parameter is unused | Reference the parameter in the query string or remove it |
 
+## Integration Testing with SQLite
+
+The SQLite provider makes generated repositories testable without database infrastructure. Reference `DreamBig.SourceGen.Dapper.Sqlite` from a test project, create an in-memory database, and exercise the same generated code paths your application uses:
+
+```csharp
+await using var connection = new SqliteConnection("Data Source=:memory:");
+await connection.OpenAsync();
+await connection.ExecuteAsync("CREATE TABLE Customers (Id INTEGER PRIMARY KEY AUTOINCREMENT, Name TEXT NOT NULL);");
+
+using var transaction = connection.BeginTransaction();
+ICustomerRepository repository = new CustomerRepositoryGenerated(connection, transaction);
+
+var id = await repository.InsertCustomer(new Customer { Name = "Ada" }, ct);
+```
+
+SQLite dialect notes:
+
+- SQLite has no schemas; `Schema` values on `[DbTable]`, `[DbQuery]`, and `[DbJoin]` are ignored.
+- `[DbStoredProcedure]` methods are not usable because SQLite has no stored procedures.
+- Insert-returning-identity uses `RETURNING`, which requires SQLite 3.35+ (bundled with `Microsoft.Data.Sqlite`).
+
 ## Known Limitations
 
-- SQL dialect support is limited to SQL Server and PostgreSQL.
+- SQL dialect support is limited to SQL Server, PostgreSQL, and SQLite.
 - Stored procedures currently support one mapped result set plus output parameter capture.
 - Complex projection and multi-mapping scenarios are not generated yet.

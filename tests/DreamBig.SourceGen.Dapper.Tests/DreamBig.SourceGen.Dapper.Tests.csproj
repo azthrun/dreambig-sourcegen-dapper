@@ -4,10 +4,19 @@
     <IsPackable>false</IsPackable>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <!-- Runs the source generator over this project so SQLite integration tests exercise real generated repositories. -->
+    <DreamBigDapperDialect>Sqlite</DreamBigDapperDialect>
   </PropertyGroup>
 
   <ItemGroup>
+    <CompilerVisibleProperty Include="DreamBigDapperDialect" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Dapper" />
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />
     <PackageReference Include="Microsoft.Extensions.Configuration" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
@@ -21,5 +30,7 @@
     <ProjectReference Include="..\..\src\DreamBig.SourceGen.Dapper.Abstractions\DreamBig.SourceGen.Dapper.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\DreamBig.SourceGen.Dapper.SqlServer\DreamBig.SourceGen.Dapper.SqlServer.csproj" />
     <ProjectReference Include="..\..\src\DreamBig.SourceGen.Dapper.PostgreSql\DreamBig.SourceGen.Dapper.PostgreSql.csproj" />
+    <ProjectReference Include="..\..\src\DreamBig.SourceGen.Dapper.Sqlite\DreamBig.SourceGen.Dapper.Sqlite.csproj" />
+    <ProjectReference Include="..\..\src\DreamBig.SourceGen.Dapper.Generator\DreamBig.SourceGen.Dapper.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>

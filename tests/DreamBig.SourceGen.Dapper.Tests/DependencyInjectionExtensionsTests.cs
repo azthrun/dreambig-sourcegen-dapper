@@ -1,8 +1,10 @@
 using System.Collections.Generic;
 using System.Data;
 using DreamBig.SourceGen.Dapper.PostgreSql;
+using DreamBig.SourceGen.Dapper.Sqlite;
 using DreamBig.SourceGen.Dapper.SqlServer;
 using Microsoft.Data.SqlClient;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
@@ -50,5 +52,26 @@ public sealed class DependencyInjectionExtensionsTests
         using var connection = scope.ServiceProvider.GetRequiredService<IDbConnection>();
         connection.ShouldBeOfType<NpgsqlConnection>();
         connection.ConnectionString.ShouldBe("Host=localhost;Database=DreamBig;Username=postgres;Password=postgres");
+    }
+
+    [Fact]
+    public void AddDreamBigDapperSqlite_ShouldRegisterConnectionsAndGeneratedRepositories()
+    {
+        var services = new ServiceCollection();
+        services.AddDreamBigDapperSqlite("Data Source=:memory:");
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        using var connection = scope.ServiceProvider.GetRequiredService<IDbConnection>();
+        connection.ShouldBeOfType<SqliteConnection>();
+        connection.ConnectionString.ShouldBe("Data Source=:memory:");
+
+        var factory = provider.GetRequiredService<Func<IDbConnection>>();
+        using var factoryConnection = factory();
+        factoryConnection.ShouldBeOfType<SqliteConnection>();
+
+        // The generated registrations in this assembly are discovered via reflection.
+        scope.ServiceProvider.GetService<ISqliteCustomerRepository>().ShouldNotBeNull();
     }
 }
