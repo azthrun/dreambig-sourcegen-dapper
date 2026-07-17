@@ -46,10 +46,13 @@ jobs:
           rm -f artifacts/nuget/*.nupkg artifacts/nuget/*.snupkg || true
           dotnet pack src/DreamBig.SourceGen.Dapper.SqlServer.Package/DreamBig.SourceGen.Dapper.SqlServer.Package.csproj --configuration Release --no-build -p:Version="${{ env.PACKAGE_VERSION }}" -p:PackageVersion="${{ env.PACKAGE_VERSION }}"
           dotnet pack src/DreamBig.SourceGen.Dapper.PostgreSql.Package/DreamBig.SourceGen.Dapper.PostgreSql.Package.csproj --configuration Release --no-build -p:Version="${{ env.PACKAGE_VERSION }}" -p:PackageVersion="${{ env.PACKAGE_VERSION }}"
+          dotnet pack src/DreamBig.SourceGen.Dapper.Sqlite.Package/DreamBig.SourceGen.Dapper.Sqlite.Package.csproj --configuration Release --no-build -p:Version="${{ env.PACKAGE_VERSION }}" -p:PackageVersion="${{ env.PACKAGE_VERSION }}"
           test -f "artifacts/nuget/DreamBig.SourceGen.Dapper.SqlServer.${{ env.PACKAGE_VERSION }}.nupkg"
           test -f "artifacts/nuget/DreamBig.SourceGen.Dapper.PostgreSql.${{ env.PACKAGE_VERSION }}.nupkg"
+          test -f "artifacts/nuget/DreamBig.SourceGen.Dapper.Sqlite.${{ env.PACKAGE_VERSION }}.nupkg"
 
       - name: Publish to NuGet
         run: |
           dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.SqlServer.${{ env.PACKAGE_VERSION }}.nupkg" --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
           dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.PostgreSql.${{ env.PACKAGE_VERSION }}.nupkg" --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
+          dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.Sqlite.${{ env.PACKAGE_VERSION }}.nupkg" --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols

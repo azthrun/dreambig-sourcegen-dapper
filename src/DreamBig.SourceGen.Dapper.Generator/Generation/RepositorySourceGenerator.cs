@@ -1485,7 +1485,10 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     private static IReadOnlyList<SqlConstantEntry> BuildSqlConstants(RepositoryModel model, DatabaseDialect dialect)
     {
         var entries = new List<SqlConstantEntry>();
-        var usedNames = new HashSet<string>(StringComparer.Ordinal);
+
+        // Seed with "Sql" so a method of that name cannot produce a constant that collides
+        // with its containing class name (CS0542 in the generated code).
+        var usedNames = new HashSet<string>(StringComparer.Ordinal) { "Sql" };
 
         for (var i = 0; i < model.Methods.Count; i++)
         {
@@ -3029,8 +3032,15 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
     {
         elementType = null;
 
+        // byte sequences are scalar blob parameters, not expandable lists: Dapper does not
+        // list-expand byte[], so treating them as enumerable would emit invalid IN clauses.
         if (type is IArrayTypeSymbol arrayType)
         {
+            if (arrayType.ElementType.SpecialType == SpecialType.System_Byte)
+            {
+                return false;
+            }
+
             elementType = arrayType.ElementType;
             return true;
         }
@@ -3040,6 +3050,11 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             && named.ContainingNamespace is { IsGlobalNamespace: false } ns
             && ns.ToDisplayString() == "System.Collections.Generic")
         {
+            if (named.TypeArguments[0].SpecialType == SpecialType.System_Byte)
+            {
+                return false;
+            }
+
             elementType = named.TypeArguments[0];
             return true;
         }
@@ -3273,6 +3288,14 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 {
                     var inner = named.TypeArguments[0];
                     var nested = FromReturnType(inner);
+
+                    // Task<IAsyncEnumerable<T>> cannot be generated: the stream is returned
+                    // synchronously, so it must be the method's direct return type.
+                    if (nested.IsAsyncStream)
+                    {
+                        return new MethodShape(false, false, false, false, false, null);
+                    }
+
                     return nested with { IsAsync = true };
                 }
 

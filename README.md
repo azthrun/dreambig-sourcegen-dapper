@@ -428,6 +428,7 @@ SQLite dialect notes:
 
 - SQLite has no schemas; `Schema` values on `[DbTable]`, `[DbQuery]`, and `[DbJoin]` are ignored.
 - `[DbStoredProcedure]` methods are not usable because SQLite has no stored procedures.
+- `AddDreamBigDapperSqlite` registers scoped connections, so with `Data Source=:memory:` every scope opens a fresh, empty database. For DI-based tests use a shared in-memory database — `Data Source=TestDb;Mode=Memory;Cache=Shared` — and hold one connection open for the lifetime of the test so the database survives between scopes.
 - Insert-returning-identity uses `RETURNING`, which requires SQLite 3.35+ (bundled with `Microsoft.Data.Sqlite`).
 
 ## Known Limitations

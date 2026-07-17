@@ -1997,6 +1997,109 @@ public interface ICustomerRepository
         generated.ShouldContain("SELECT COUNT(*) FROM \\\"Customers\\\";");
     }
 
+    [Fact]
+    public void ShouldRejectTaskWrappedAsyncStream()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<IAsyncEnumerable<Customer>> GetAllCustomers(CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.Any(d => d.Id == "DBSGD002" && d.Severity == DiagnosticSeverity.Error).ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ShouldTreatByteArrayFilterParameterAsScalar()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public byte[] Token { get; set; } = [];
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<Customer?> GetCustomerByToken(byte[] token, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("WHERE [Token] = @token;");
+        generated.ShouldNotContain("IN @token");
+    }
+
+    [Fact]
+    public void ShouldRenameSqlConstantWhenMethodIsNamedSql()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    [DbOperation(DbOperationKind.GetAll, Entity = typeof(Customer))]
+    Task<IEnumerable<Customer>> Sql(CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source);
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("public const string Sql_2 =");
+        generated.ShouldContain("QueryGeneratedAsync<global::Demo.Customer>(Sql.Sql_2,");
+    }
+
     private static GeneratorResult RunGenerator(string source, string? dialect = null)
     {
         var syntaxTree = CSharpSyntaxTree.ParseText(source);
