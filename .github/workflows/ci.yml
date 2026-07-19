@@ -3,7 +3,7 @@ name: CI
 permissions:
   id-token: write
   contents: read
-  
+
 on:
   push:
     branches: [main]
@@ -108,11 +108,22 @@ jobs:
           test -f "artifacts/nuget/DreamBig.SourceGen.Dapper.PostgreSql.${{ env.PACKAGE_VERSION }}.nupkg"
           test -f "artifacts/nuget/DreamBig.SourceGen.Dapper.Sqlite.${{ env.PACKAGE_VERSION }}.nupkg"
 
-      - name: Publish to NuGet
+      - name: Login to NuGet
+        uses: NuGet/login@v1
+        with:
+          nuget-client-id: ${{ secrets.NUGET_USER }}
+
+      - name: Publish Package
         run: |
-          dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.SqlServer.${{ env.PACKAGE_VERSION }}.nupkg" --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
-          dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.PostgreSql.${{ env.PACKAGE_VERSION }}.nupkg" --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
-          dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.Sqlite.${{ env.PACKAGE_VERSION }}.nupkg" --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
+          dotnet nuget push ./nupkg/*.nupkg \
+            --api-key ${{ steps.login.outputs.nuget-api-key }} \
+            --source https://api.nuget.org/v3/index.json
+
+      # - name: Publish to NuGet
+      #   run: |
+      #     dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.SqlServer.${{ env.PACKAGE_VERSION }}.nupkg" --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
+      #     dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.PostgreSql.${{ env.PACKAGE_VERSION }}.nupkg" --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
+      #     dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.Sqlite.${{ env.PACKAGE_VERSION }}.nupkg" --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
 
       - name: Create Tag
         run: |
