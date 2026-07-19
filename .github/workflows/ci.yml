@@ -1,9 +1,5 @@
 name: CI
 
-permissions:
-  id-token: write
-  contents: read
-
 on:
   push:
     branches: [main]
@@ -43,6 +39,7 @@ jobs:
     needs: build-test
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: write
     environment:
       name: beta-release
