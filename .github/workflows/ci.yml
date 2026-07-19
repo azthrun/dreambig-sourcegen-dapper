@@ -112,9 +112,9 @@ jobs:
 
       - name: Publish Package
         run: |
-          dotnet nuget push ./nupkg/*.nupkg \
-            --api-key ${{ steps.login.outputs.nuget-api-key }} \
-            --source https://api.nuget.org/v3/index.json
+          dotnet nuget push artifacts/nuget/*.nupkg \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate --no-symbols
 
       # - name: Publish to NuGet
       #   run: |
