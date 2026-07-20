@@ -113,9 +113,9 @@ jobs:
 
       - name: Publish Package
         run: |
-          dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.SqlServer.${{ env.PACKAGE_VERSION }}.nupkg" --api-key ${{ steps.login.outputs.nuget-api-key }} --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
-          dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.PostgreSql.${{ env.PACKAGE_VERSION }}.nupkg" --api-key ${{ steps.login.outputs.nuget-api-key }} --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
-          dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.Sqlite.${{ env.PACKAGE_VERSION }}.nupkg" --api-key ${{ steps.login.outputs.nuget-api-key }} --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
+          dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.SqlServer.${{ env.PACKAGE_VERSION }}.nupkg" --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
+          dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.PostgreSql.${{ env.PACKAGE_VERSION }}.nupkg" --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
+          dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.Sqlite.${{ env.PACKAGE_VERSION }}.nupkg" --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
 
       - name: Create Tag
         run: |
