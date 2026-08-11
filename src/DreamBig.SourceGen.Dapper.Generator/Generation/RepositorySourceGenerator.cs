@@ -78,7 +78,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 }
 
                 var diagnostics = new List<Diagnostic>();
-                var repository = BuildRepositoryModel(interfaceSymbol, diagnostics);
+                var repository = BuildRepositoryModel(interfaceSymbol, dialect, diagnostics);
 
                 foreach (var diagnostic in diagnostics)
                 {
@@ -139,7 +139,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         return hintName;
     }
 
-    private static RepositoryModel? BuildRepositoryModel(INamedTypeSymbol interfaceSymbol, List<Diagnostic> diagnostics)
+    private static RepositoryModel? BuildRepositoryModel(INamedTypeSymbol interfaceSymbol, DatabaseDialect dialect, List<Diagnostic> diagnostics)
     {
         var methods = new List<RepositoryMethodModel>();
 
@@ -150,7 +150,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 continue;
             }
 
-            var model = BuildMethodModel(member, diagnostics);
+            var model = BuildMethodModel(member, dialect, diagnostics);
             if (model is null)
             {
                 continue;
@@ -295,7 +295,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             RepositoryProperties: properties);
     }
 
-    private static RepositoryMethodModel? BuildMethodModel(IMethodSymbol method, List<Diagnostic> diagnostics)
+    private static RepositoryMethodModel? BuildMethodModel(IMethodSymbol method, DatabaseDialect dialect, List<Diagnostic> diagnostics)
     {
         var operationKind = ResolveOperationKind(method);
         if (operationKind == RepositoryOperationKind.Unknown)
@@ -618,6 +618,20 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
                 method.Locations.FirstOrDefault(),
                 entity.ClrTypeName,
                 operationKind.ToString()));
+            return null;
+        }
+
+        if (returnsIdentity
+            && dialect == DatabaseDialect.MySql
+            && entity is not null
+            && entity.KeyProperty is not null
+            && !IsMySqlAutoIncrementKeyType(entity.KeyProperty.TypeName))
+        {
+            diagnostics.Add(Diagnostic.Create(
+                DiagnosticDescriptors.MySqlIdentityKeyTypeUnsupported,
+                method.Locations.FirstOrDefault(),
+                entity.ClrTypeName,
+                entity.KeyProperty.TypeName));
             return null;
         }
 
@@ -1391,6 +1405,14 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             ? typeName.Substring(0, typeName.Length - 1)
             : typeName;
 
+    private static readonly HashSet<string> MySqlAutoIncrementKeyTypes = new(StringComparer.Ordinal)
+    {
+        "byte", "sbyte", "short", "ushort", "int", "uint", "long", "ulong",
+    };
+
+    private static bool IsMySqlAutoIncrementKeyType(string typeName)
+        => MySqlAutoIncrementKeyTypes.Contains(TrimNullableSuffix(typeName));
+
     private static string RenderRepository(RepositoryModel model, DatabaseDialect dialect)
     {
         var sb = new StringBuilder();
@@ -1889,6 +1911,11 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             return dialect switch
             {
                 DatabaseDialect.PostgreSql or DatabaseDialect.Sqlite => $"INSERT INTO {table} ({columnsSql}) VALUES ({valuesSql}) RETURNING {keyColumn};",
+
+                // Plain MySQL has no OUTPUT/RETURNING clause; batch the insert with a follow-up
+                // LAST_INSERT_ID() select. Restricted to auto-increment integer keys at compile time
+                // (DBSGD029) since LAST_INSERT_ID() only reflects the most recent auto-increment value.
+                DatabaseDialect.MySql => $"INSERT INTO {table} ({columnsSql}) VALUES ({valuesSql}); SELECT LAST_INSERT_ID();",
                 _ => $"INSERT INTO {table} ({columnsSql}) OUTPUT INSERTED.{keyColumn} VALUES ({valuesSql});",
             };
         }
@@ -2127,7 +2154,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         var orderBySql = $"{BuildEntitySelect(method.Entity, dialect, caseSensitive)} ORDER BY {Quote(dialect, orderByColumn, caseSensitive)} {ToSql(method.QueryMetadata.OrderByDirection)}";
         var pageSql = dialect switch
         {
-            DatabaseDialect.PostgreSql or DatabaseDialect.Sqlite => $"{orderBySql} LIMIT @{takeParameter} OFFSET @{skipParameter};",
+            DatabaseDialect.PostgreSql or DatabaseDialect.Sqlite or DatabaseDialect.MySql => $"{orderBySql} LIMIT @{takeParameter} OFFSET @{skipParameter};",
             _ => $"{orderBySql} OFFSET @{skipParameter} ROWS FETCH NEXT @{takeParameter} ROWS ONLY;",
         };
 
@@ -2408,8 +2435,9 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
 
     private static string QualifiedTable(DatabaseDialect dialect, string? schema, bool isSchemaExplicit, string table, bool caseSensitive)
     {
-        // SQLite has no schemas; schema values (explicit or default) are ignored.
-        if (dialect == DatabaseDialect.Sqlite)
+        // SQLite has no schemas, and MySQL/MariaDB treat the database itself as the namespace rather than
+        // a separate schema concept; schema values (explicit or default) are ignored for both.
+        if (dialect is DatabaseDialect.Sqlite or DatabaseDialect.MySql)
         {
             return Quote(dialect, table, caseSensitive);
         }
@@ -2435,6 +2463,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             DatabaseDialect.PostgreSql or DatabaseDialect.Sqlite => caseSensitive
                 ? $"\"{identifier.Replace("\"", "\"\"")}\""
                 : identifier,
+            DatabaseDialect.MySql => $"`{identifier.Replace("`", "``")}`",
             _ => $"[{identifier.Replace("]", "]]")}]",
         };
 
@@ -2460,7 +2489,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             name = "UnknownProcedure";
         }
 
-        if (dialect == DatabaseDialect.Sqlite)
+        if (dialect is DatabaseDialect.Sqlite or DatabaseDialect.MySql)
         {
             return Quote(dialect, name!, caseSensitive);
         }
@@ -3108,6 +3137,14 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
             {
                 return DatabaseDialect.Sqlite;
             }
+
+            if (string.Equals(value, "MySql", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "MySQL", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "MariaDb", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "MariaDB", StringComparison.OrdinalIgnoreCase))
+            {
+                return DatabaseDialect.MySql;
+            }
         }
 
         return DatabaseDialect.SqlServer;
@@ -3258,6 +3295,7 @@ public sealed class RepositorySourceGenerator : IIncrementalGenerator
         SqlServer,
         PostgreSql,
         Sqlite,
+        MySql,
     }
 
     private sealed record MethodShape(

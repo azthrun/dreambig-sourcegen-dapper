@@ -17,6 +17,7 @@
     <PackageReference Include="Dapper" />
     <PackageReference Include="Microsoft.Data.Sqlite" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />
+    <PackageReference Include="MySqlConnector" />
     <PackageReference Include="Microsoft.Extensions.Configuration" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
@@ -31,6 +32,7 @@
     <ProjectReference Include="..\..\src\DreamBig.SourceGen.Dapper.SqlServer\DreamBig.SourceGen.Dapper.SqlServer.csproj" />
     <ProjectReference Include="..\..\src\DreamBig.SourceGen.Dapper.PostgreSql\DreamBig.SourceGen.Dapper.PostgreSql.csproj" />
     <ProjectReference Include="..\..\src\DreamBig.SourceGen.Dapper.Sqlite\DreamBig.SourceGen.Dapper.Sqlite.csproj" />
+    <ProjectReference Include="..\..\src\DreamBig.SourceGen.Dapper.MySql\DreamBig.SourceGen.Dapper.MySql.csproj" />
     <ProjectReference Include="..\..\src\DreamBig.SourceGen.Dapper.Generator\DreamBig.SourceGen.Dapper.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>

@@ -33,6 +33,7 @@ jobs:
           dotnet pack src/DreamBig.SourceGen.Dapper.SqlServer.Package/DreamBig.SourceGen.Dapper.SqlServer.Package.csproj --configuration Release --no-build
           dotnet pack src/DreamBig.SourceGen.Dapper.PostgreSql.Package/DreamBig.SourceGen.Dapper.PostgreSql.Package.csproj --configuration Release --no-build
           dotnet pack src/DreamBig.SourceGen.Dapper.Sqlite.Package/DreamBig.SourceGen.Dapper.Sqlite.Package.csproj --configuration Release --no-build
+          dotnet pack src/DreamBig.SourceGen.Dapper.MySql.Package/DreamBig.SourceGen.Dapper.MySql.Package.csproj --configuration Release --no-build
 
   publish-beta:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -101,9 +102,11 @@ jobs:
           dotnet pack src/DreamBig.SourceGen.Dapper.SqlServer.Package/DreamBig.SourceGen.Dapper.SqlServer.Package.csproj --configuration Release --no-build -p:Version="${{ env.PACKAGE_VERSION }}" -p:PackageVersion="${{ env.PACKAGE_VERSION }}"
           dotnet pack src/DreamBig.SourceGen.Dapper.PostgreSql.Package/DreamBig.SourceGen.Dapper.PostgreSql.Package.csproj --configuration Release --no-build -p:Version="${{ env.PACKAGE_VERSION }}" -p:PackageVersion="${{ env.PACKAGE_VERSION }}"
           dotnet pack src/DreamBig.SourceGen.Dapper.Sqlite.Package/DreamBig.SourceGen.Dapper.Sqlite.Package.csproj --configuration Release --no-build -p:Version="${{ env.PACKAGE_VERSION }}" -p:PackageVersion="${{ env.PACKAGE_VERSION }}"
+          dotnet pack src/DreamBig.SourceGen.Dapper.MySql.Package/DreamBig.SourceGen.Dapper.MySql.Package.csproj --configuration Release --no-build -p:Version="${{ env.PACKAGE_VERSION }}" -p:PackageVersion="${{ env.PACKAGE_VERSION }}"
           test -f "artifacts/nuget/DreamBig.SourceGen.Dapper.SqlServer.${{ env.PACKAGE_VERSION }}.nupkg"
           test -f "artifacts/nuget/DreamBig.SourceGen.Dapper.PostgreSql.${{ env.PACKAGE_VERSION }}.nupkg"
           test -f "artifacts/nuget/DreamBig.SourceGen.Dapper.Sqlite.${{ env.PACKAGE_VERSION }}.nupkg"
+          test -f "artifacts/nuget/DreamBig.SourceGen.Dapper.MySql.${{ env.PACKAGE_VERSION }}.nupkg"
 
       - name: Login to NuGet
         uses: NuGet/login@v1
@@ -116,6 +119,7 @@ jobs:
           dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.SqlServer.${{ env.PACKAGE_VERSION }}.nupkg" --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
           dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.PostgreSql.${{ env.PACKAGE_VERSION }}.nupkg" --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
           dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.Sqlite.${{ env.PACKAGE_VERSION }}.nupkg" --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
+          dotnet nuget push "artifacts/nuget/DreamBig.SourceGen.Dapper.MySql.${{ env.PACKAGE_VERSION }}.nupkg" --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate --no-symbols
 
       - name: Create Tag
         run: |
@@ -129,5 +133,5 @@ jobs:
             echo ""
             echo "- Tag: \`${{ env.BETA_TAG }}\`"
             echo "- Package version: \`${{ env.PACKAGE_VERSION }}\`"
-            echo "- Packages: \`DreamBig.SourceGen.Dapper.SqlServer\`, \`DreamBig.SourceGen.Dapper.PostgreSql\`, \`DreamBig.SourceGen.Dapper.Sqlite\`"
+            echo "- Packages: \`DreamBig.SourceGen.Dapper.SqlServer\`, \`DreamBig.SourceGen.Dapper.PostgreSql\`, \`DreamBig.SourceGen.Dapper.Sqlite\`, \`DreamBig.SourceGen.Dapper.MySql\`"
           } >> "$GITHUB_STEP_SUMMARY"

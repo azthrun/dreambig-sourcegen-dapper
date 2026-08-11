@@ -227,4 +227,12 @@ internal static class DiagnosticDescriptors
         category: "DreamBig.SourceGen.Dapper",
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor MySqlIdentityKeyTypeUnsupported = new(
+        id: "DBSGD029",
+        title: "MySQL identity key type is unsupported",
+        messageFormat: "Entity '{0}' key property has type '{1}', but MySQL/MariaDB ReturnIdentity requires an integer auto-increment key (int, long, short, byte, or an unsigned variant).",
+        category: "DreamBig.SourceGen.Dapper",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
 }

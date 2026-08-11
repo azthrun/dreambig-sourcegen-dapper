@@ -12,7 +12,7 @@ It generates repository implementations, Unit of Work wrappers, and DI registrat
 - Generated query composition with `[DbQuery]` and `[DbJoin]`
 - Generated stored procedure execution with output parameter support
 - Generated Unit of Work implementations
-- Provider-specific SQL for SQL Server, PostgreSQL, and SQLite
+- Provider-specific SQL for SQL Server, PostgreSQL, SQLite, and MySQL/MariaDB
 
 ## Install
 
@@ -21,6 +21,7 @@ Choose one provider package:
 - SQL Server: `DreamBig.SourceGen.Dapper.SqlServer`
 - PostgreSQL: `DreamBig.SourceGen.Dapper.PostgreSql`
 - SQLite: `DreamBig.SourceGen.Dapper.Sqlite`
+- MySQL / MariaDB: `DreamBig.SourceGen.Dapper.MySql`
 
 ### Package Reference
 
@@ -93,7 +94,7 @@ services.AddDreamBigDapperSqlServer(configuration);
 services.AddDreamBigDapperGenerated();
 ```
 
-For PostgreSQL, use `AddDreamBigDapperPostgreSql(configuration)` instead; for SQLite, `AddDreamBigDapperSqlite(configuration)`.
+For PostgreSQL, use `AddDreamBigDapperPostgreSql(configuration)` instead; for SQLite, `AddDreamBigDapperSqlite(configuration)`; for MySQL/MariaDB, `AddDreamBigDapperMySql(configuration)`.
 
 The generator also emits `AddDreamBigDapperGenerated(IServiceCollection)`, which registers generated repositories and Unit of Work types as scoped services.
 
@@ -102,6 +103,7 @@ Configuration sections:
 - SQL Server: `DreamBig:Dapper:SqlServer`
 - PostgreSQL: `DreamBig:Dapper:PostgreSql`
 - SQLite: `DreamBig:Dapper:Sqlite`
+- MySQL / MariaDB: `DreamBig:Dapper:MySql`
 
 Both provider packages also expose overloads for raw connection strings and custom connection string factories.
 
@@ -177,7 +179,7 @@ When no `By` clause is present, filter properties for `GetBy`, `Count`, and `Exi
 
 ### Insert Returning Identity
 
-Set `ReturnIdentity = true` to return the database-generated key instead of the affected row count (`OUTPUT INSERTED` on SQL Server, `RETURNING` on PostgreSQL):
+Set `ReturnIdentity = true` to return the database-generated key instead of the affected row count (`OUTPUT INSERTED` on SQL Server, `RETURNING` on PostgreSQL/SQLite, a batched `LAST_INSERT_ID()` select on MySQL/MariaDB):
 
 ```csharp
 [DbOperation(DbOperationKind.Insert, ReturnIdentity = true)]
@@ -250,6 +252,7 @@ The method name should still mirror the entity name closely. If the convention i
 - Every `@parameter` referenced in a query string must match a method parameter name; unknown references produce diagnostic `DBSGD026` at compile time.
 - `JoinColumnA` and `JoinColumnB` must match CLR property names on the joined entities.
 - For PostgreSQL, `DbRepository(CaseSensitive = false)` emits unquoted identifiers for consumers who want unquoted SQL.
+- MySQL/MariaDB always emits backtick-quoted identifiers; `CaseSensitive` has no effect for that provider (see [MySQL / MariaDB dialect notes](#mysql--mariadb-dialect-notes)).
 
 ### Stored Procedures
 
@@ -281,6 +284,7 @@ The method name should still mirror the entity name closely. If the convention i
 | `[DbOperation]` | Declares the operation explicitly, overriding name conventions |
 | `AddDreamBigDapperSqlServer(...)` | Registers SQL Server connection and DI support |
 | `AddDreamBigDapperPostgreSql(...)` | Registers PostgreSQL connection and DI support |
+| `AddDreamBigDapperMySql(...)` | Registers MySQL/MariaDB connection and DI support |
 | `AddDreamBigDapperGenerated()` | Registers generated repositories and Unit of Work types |
 | `GeneratedProcedureResult<T>` | Wraps rows and output parameter values from a stored procedure |
 | `PagedResult<T>` | Wraps one page of rows plus the total row count |
@@ -408,6 +412,16 @@ catch
 | `DBSGD026` | Query references an unknown SQL parameter | Fix the `@parameter` name to match a method parameter |
 | `DBSGD027` | Convention property is invalid | Use a CLR property name that exists on the entity in the `By` clause |
 | `DBSGD028` | Query parameter is unused | Reference the parameter in the query string or remove it |
+| `DBSGD029` | MySQL identity key type is unsupported | Use an integer auto-increment key (`int`, `long`, `short`, `byte`, or an unsigned variant) with `ReturnIdentity = true` on MySQL/MariaDB |
+
+## MySQL / MariaDB Dialect Notes
+
+Reference `DreamBig.SourceGen.Dapper.MySql` for MySQL 5.7+ or MariaDB 10.3+.
+
+- Identifiers are always backtick-quoted (`` `Column` ``); `DbRepository(CaseSensitive = ...)` has no effect on this provider.
+- MySQL/MariaDB have no schema concept separate from the database; `Schema` values on `[DbTable]`, `[DbQuery]`, and `[DbJoin]` are ignored, the same as SQLite.
+- `ReturnIdentity = true` emits a batched `INSERT ...; SELECT LAST_INSERT_ID();` since plain MySQL has no `OUTPUT`/`RETURNING` clause. This is restricted at compile time to entities whose key is an integer auto-increment column (diagnostic `DBSGD029` otherwise).
+- MariaDB's native `RETURNING` (10.5+) is intentionally not used, so MySQL and MariaDB share one generated SQL path.
 
 ## Integration Testing with SQLite
 
@@ -433,6 +447,6 @@ SQLite dialect notes:
 
 ## Known Limitations
 
-- SQL dialect support is limited to SQL Server, PostgreSQL, and SQLite.
+- SQL dialect support is limited to SQL Server, PostgreSQL, SQLite, and MySQL/MariaDB.
 - Stored procedures currently support one mapped result set plus output parameter capture.
 - Complex projection and multi-mapping scenarios are not generated yet.

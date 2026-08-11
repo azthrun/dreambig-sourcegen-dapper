@@ -1679,6 +1679,236 @@ public interface ICustomerRepository
     }
 
     [Fact]
+    public void ShouldGenerateMySqlDialectSql()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers", Schema = "dbo")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    [DbColumn("full_name")]
+    public string Name { get; set; } = string.Empty;
+
+    public string Email { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<int> InsertCustomer(Customer entity, CancellationToken cancellationToken);
+    Task<int> UpdateCustomer(Customer entity, CancellationToken cancellationToken);
+    Task<int> DeleteCustomer(int id, CancellationToken cancellationToken);
+    Task<Customer?> GetByIdCustomer(int id, CancellationToken cancellationToken);
+    Task<IEnumerable<Customer>> GetAllCustomers(CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source, "MySql");
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        // MySQL/MariaDB have no schema concept separate from the database; the explicit Schema = "dbo" is ignored.
+        generated.ShouldContain("INSERT INTO `Customers`");
+        generated.ShouldContain("UPDATE `Customers` SET");
+        generated.ShouldContain("DELETE FROM `Customers`");
+        generated.ShouldContain("SELECT `Id` AS `Id`, `full_name` AS `Name`, `Email` AS `Email` FROM `Customers`");
+    }
+
+    [Fact]
+    public void ShouldIgnoreCaseSensitiveFlagForMySqlAndAlwaysQuote()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository(CaseSensitive = false)]
+public interface ICustomerRepository
+{
+    Task<IEnumerable<Customer>> GetAllCustomers(CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source, "MySql");
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("SELECT `Id` AS `Id`, `Name` AS `Name` FROM `Customers`");
+    }
+
+    [Fact]
+    public void ShouldGenerateMySqlGetPageWithLimitOffset()
+    {
+        const string source = """
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    Task<IEnumerable<Customer>> GetPageCustomers(int skip, int take, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source, "MySql");
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("LIMIT @take OFFSET @skip");
+    }
+
+    [Fact]
+    public void ShouldGenerateInsertReturningIdentityForMySqlUsingLastInsertId()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    [DbOperation(DbOperationKind.Insert, ReturnIdentity = true)]
+    Task<int> InsertCustomer(Customer entity, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source, "MySql");
+        result.Diagnostics.ShouldBeEmpty();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+
+        generated.ShouldContain("INSERT INTO `Customers` (`Name`) VALUES (@Name); SELECT LAST_INSERT_ID();");
+        generated.ShouldContain("QueryGeneratedAsync<int>(Sql.InsertCustomer, entity, transaction");
+        generated.ShouldContain("return rows.FirstOrDefault();");
+    }
+
+    [Fact]
+    public void ShouldReportDiagnosticForMySqlIdentityWithNonIntegerKey()
+    {
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public string Id { get; set; } = string.Empty;
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    [DbOperation(DbOperationKind.Insert, ReturnIdentity = true)]
+    Task<string> InsertCustomer(Customer entity, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source, "MySql");
+        result.Diagnostics.Any(d => d.Id == "DBSGD029" && d.Severity == DiagnosticSeverity.Error).ShouldBeTrue();
+
+        var generated = string.Join(
+            Environment.NewLine,
+            result.GeneratedTrees.Select(static t => t.GetText().ToString()));
+        generated.ShouldNotContain("CustomerRepositoryGenerated");
+    }
+
+    [Fact]
+    public void ShouldAllowInsertReturningIdentityForPostgreSqlWithNonIntegerKeyUnrestricted()
+    {
+        // Only MySQL restricts ReturnIdentity key types (DBSGD029); other dialects are unaffected.
+        const string source = """
+using System.Threading;
+using System.Threading.Tasks;
+using DreamBig.SourceGen.Dapper.Attributes;
+
+namespace Demo;
+
+[DbTable("Customers")]
+public sealed class Customer
+{
+    [DbKey]
+    public string Id { get; set; } = string.Empty;
+
+    public string Name { get; set; } = string.Empty;
+}
+
+[DbRepository]
+public interface ICustomerRepository
+{
+    [DbOperation(DbOperationKind.Insert, ReturnIdentity = true)]
+    Task<string> InsertCustomer(Customer entity, CancellationToken cancellationToken);
+}
+""";
+
+        var result = RunGenerator(source, "PostgreSql");
+        result.Diagnostics.Any(d => d.Id == "DBSGD029").ShouldBeFalse();
+        result.GeneratedTrees.ShouldNotBeEmpty();
+    }
+
+    [Fact]
     public void ShouldGeneratePagedResultWithTotalCount()
     {
         const string source = """

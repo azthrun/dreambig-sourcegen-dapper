@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Data;
+using DreamBig.SourceGen.Dapper.MySql;
 using DreamBig.SourceGen.Dapper.PostgreSql;
 using DreamBig.SourceGen.Dapper.Sqlite;
 using DreamBig.SourceGen.Dapper.SqlServer;
@@ -7,6 +8,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using MySqlConnector;
 using Npgsql;
 using Shouldly;
 using Xunit;
@@ -52,6 +54,45 @@ public sealed class DependencyInjectionExtensionsTests
         using var connection = scope.ServiceProvider.GetRequiredService<IDbConnection>();
         connection.ShouldBeOfType<NpgsqlConnection>();
         connection.ConnectionString.ShouldBe("Host=localhost;Database=DreamBig;Username=postgres;Password=postgres");
+    }
+
+    [Fact]
+    public void AddDreamBigDapperMySql_ShouldRegisterConnections()
+    {
+        var services = new ServiceCollection();
+        services.AddDreamBigDapperMySql("Server=localhost;Database=DreamBig;Uid=root;Pwd=root;");
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        using var connection = scope.ServiceProvider.GetRequiredService<IDbConnection>();
+        connection.ShouldBeOfType<MySqlConnection>();
+        connection.ConnectionString.ShouldBe("Server=localhost;Database=DreamBig;Uid=root;Pwd=root;");
+
+        var factory = provider.GetRequiredService<Func<IDbConnection>>();
+        using var factoryConnection = factory();
+        factoryConnection.ShouldBeOfType<MySqlConnection>();
+    }
+
+    [Fact]
+    public void AddDreamBigDapperMySql_ShouldBindConfiguration()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["DreamBig:Dapper:MySql:ConnectionString"] = "Server=localhost;Database=DreamBig;Uid=root;Pwd=root;",
+            })
+            .Build();
+
+        var services = new ServiceCollection();
+        services.AddDreamBigDapperMySql(configuration);
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        using var connection = scope.ServiceProvider.GetRequiredService<IDbConnection>();
+        connection.ShouldBeOfType<MySqlConnection>();
+        connection.ConnectionString.ShouldBe("Server=localhost;Database=DreamBig;Uid=root;Pwd=root;");
     }
 
     [Fact]

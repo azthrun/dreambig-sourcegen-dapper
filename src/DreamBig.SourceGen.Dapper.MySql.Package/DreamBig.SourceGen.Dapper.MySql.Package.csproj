@@ -1,0 +1,69 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <AssemblyName>DreamBig.SourceGen.Dapper.MySql.Package</AssemblyName>
+    <NoWarn>$(NoWarn);CS1591;NU5128</NoWarn>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <IsPackable>true</IsPackable>
+    <PackageId>DreamBig.SourceGen.Dapper.MySql</PackageId>
+    <Title>DreamBig.SourceGen.Dapper.MySql</Title>
+    <Description>Attribute-driven source-generated Dapper repository implementation with MySQL/MariaDB support for CRUD, joins, and stored procedures.</Description>
+    <Authors>DreamBig</Authors>
+    <PackageTags>dapper;source-generator;orm;mysql;mariadb</PackageTags>
+    <PackageProjectUrl>https://github.com/azthrun/dreambig-sourcegen-dapper</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/azthrun/dreambig-sourcegen-dapper</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageOutputPath>$(MSBuildThisFileDirectory)..\..\artifacts\nuget</PackageOutputPath>
+    <SuppressDependenciesWhenPacking>false</SuppressDependenciesWhenPacking>
+    <DevelopmentDependency>false</DevelopmentDependency>
+    <NoPackageAnalysis>false</NoPackageAnalysis>
+    <SuppressTfmSupportBuildWarnings>true</SuppressTfmSupportBuildWarnings>
+    <IncludeSymbols>false</IncludeSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="all" />
+    <PackageReference Include="Dapper" />
+    <PackageReference Include="MySqlConnector" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Options" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
+    <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DreamBig.SourceGen.Dapper.Abstractions\DreamBig.SourceGen.Dapper.Abstractions.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <ProjectReference Include="..\DreamBig.SourceGen.Dapper.Generator\DreamBig.SourceGen.Dapper.Generator.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <ProjectReference Include="..\DreamBig.SourceGen.Dapper.MySql\DreamBig.SourceGen.Dapper.MySql.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="/" Visible="false" />
+    <None Include="..\..\LICENSE" Pack="true" PackagePath="/" Visible="false" />
+    <None Include="buildTransitive\DreamBig.SourceGen.Dapper.MySql.props" Pack="true" PackagePath="buildTransitive/" Visible="false" />
+
+    <!-- Pack runs in the outer (TFM-less) build, so lib assets are listed explicitly per target framework. -->
+    <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net8.0\DreamBig.SourceGen.Dapper.Abstractions.dll" Pack="true" PackagePath="lib/net8.0/" Visible="false" />
+    <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net8.0\DreamBig.SourceGen.Dapper.Abstractions.xml" Pack="true" PackagePath="lib/net8.0/" Visible="false" />
+    <None Include="..\DreamBig.SourceGen.Dapper.MySql\bin\$(Configuration)\net8.0\DreamBig.SourceGen.Dapper.MySql.dll" Pack="true" PackagePath="lib/net8.0/" Visible="false" />
+    <None Include="..\DreamBig.SourceGen.Dapper.MySql\bin\$(Configuration)\net8.0\DreamBig.SourceGen.Dapper.MySql.xml" Pack="true" PackagePath="lib/net8.0/" Visible="false" />
+    <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.Abstractions.dll" Pack="true" PackagePath="lib/net10.0/" Visible="false" />
+    <None Include="..\DreamBig.SourceGen.Dapper.Abstractions\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.Abstractions.xml" Pack="true" PackagePath="lib/net10.0/" Visible="false" />
+    <None Include="..\DreamBig.SourceGen.Dapper.MySql\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.MySql.dll" Pack="true" PackagePath="lib/net10.0/" Visible="false" />
+    <None Include="..\DreamBig.SourceGen.Dapper.MySql\bin\$(Configuration)\net10.0\DreamBig.SourceGen.Dapper.MySql.xml" Pack="true" PackagePath="lib/net10.0/" Visible="false" />
+
+    <None Include="..\DreamBig.SourceGen.Dapper.Generator\bin\$(Configuration)\netstandard2.0\DreamBig.SourceGen.Dapper.Generator.dll" Pack="true" PackagePath="analyzers/dotnet/cs/" Visible="false" />
+  </ItemGroup>
+
+  <Target Name="BuildPackageDependencies" BeforeTargets="Pack" Condition="'$(NoBuild)' != 'true'">
+    <MSBuild
+      Projects="..\DreamBig.SourceGen.Dapper.Abstractions\DreamBig.SourceGen.Dapper.Abstractions.csproj;..\DreamBig.SourceGen.Dapper.Generator\DreamBig.SourceGen.Dapper.Generator.csproj;..\DreamBig.SourceGen.Dapper.MySql\DreamBig.SourceGen.Dapper.MySql.csproj"
+      Targets="Build"
+      Properties="Configuration=$(Configuration);UseSharedCompilation=false" />
+  </Target>
+</Project>

@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <DreamBigDapperDialect>MySql</DreamBigDapperDialect>
+  </PropertyGroup>
+  <ItemGroup>
+    <CompilerVisibleProperty Include="DreamBigDapperDialect" />
+  </ItemGroup>
+</Project>
